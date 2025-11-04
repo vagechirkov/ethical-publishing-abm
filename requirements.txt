@@ -1,4 +1,4 @@
-mesa[all]
+mesa[all]>=3.3.0
 notebook
 ipykernel
 seaborn
