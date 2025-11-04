@@ -1,1 +1,1 @@
-# -ethical-publishing-abm
+# Ethical Publishing ABM
