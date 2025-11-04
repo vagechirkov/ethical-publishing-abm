@@ -1,0 +1,4 @@
+mesa[all]
+notebook
+ipykernel
+seaborn
