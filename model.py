@@ -6,12 +6,7 @@ import seaborn as sns
 
 
 # Contribution function
-def contribution(cur_prestige, all_prestige):
-    # Top 10% of the distribution
-    top_pres = np.quantile(all_prestige, 0.9)
-    # Bottom 50% of the distribution
-    low_pres = np.quantile(all_prestige, 0.5)
-
+def contribution(cur_prestige, top_pres, low_pres):
     # If current prestige above 90%
     if cur_prestige >= top_pres:
         # return cur_prestige
@@ -23,7 +18,6 @@ def contribution(cur_prestige, all_prestige):
     # If current prestige between 50% and 90%
     else:
         return 0.0
-
 
 class JournalAgent(mesa.Agent):
     def __init__(self, model, is_oa, cost, ethics, reputation, acceptance_rate):
@@ -53,16 +47,12 @@ class ResearcherGroupAgent(mesa.Agent):
 
     def submit_paper(self):
         """Score journals, sort them, and attempt to publish a paper."""
-        # Get all journal agents from the model
-        journals = [agent for agent in self.model.agents if isinstance(agent, JournalAgent)]
+        journals = self.model.cached_journal_list
+        rep_scores = self.model.cached_journal_norm_reputations
+        ethics_scores = self.model.cached_journal_ethics
 
-        # Extract current reputation and ethics scores for scoring
-        reputations = np.array([j.reputation for j in journals])
-        ethics_scores = np.array([j.ethics for j in journals])
-
-        # Calculate scores for all journals based on this group's preferences
         journal_scores = (
-                self.weight_prestige * (reputations / reputations.max()) +
+                self.weight_prestige * rep_scores +
                 self.weight_ethics * ethics_scores
         )
 
@@ -77,15 +67,24 @@ class ResearcherGroupAgent(mesa.Agent):
                 # --- Publication successful ---
                 # Update journal state
                 journal.reputation += (self.model.weight_contribution *
-                                       contribution(self.prestige, self.model.all_group_prestiges))
+                                       contribution(self.prestige,
+                                                    self.model.group_quantile_90,
+                                                    self.model.group_quantile_50))
                 journal.revenue_this_step += journal.cost
                 journal.papers_this_step += 1
 
                 # Update this agent's state
-                self.prestige += contribution(journal.reputation, self.model.all_journal_reputations)
+                self.prestige += contribution(journal.reputation,
+                                              self.model.journal_quantile_90,
+                                              self.model.journal_quantile_50)
 
                 # Stop submission process for this step
                 break
+
+    def step(self):
+        """The agent's action during a simulation step."""
+        self.submit_paper()
+
 
     def step(self):
         """The agent's action during a simulation step."""
@@ -99,6 +98,17 @@ class PublishingModel(mesa.Model):
         self.n_groups = n_groups
         self.n_journals = n_journals
         self.weight_contribution = weight_contribution
+
+        # Add attributes to cache step-level quantiles
+        self.group_quantile_90 = 0
+        self.group_quantile_50 = 0
+        self.journal_quantile_90 = 0
+        self.journal_quantile_50 = 0
+
+        # Add attributes to cache step-level journal data
+        self.cached_journal_list = []
+        self.cached_journal_ethics = np.array([])
+        self.cached_journal_norm_reputations = np.array([])
 
         # Create Journal Agents
         JournalAgent.create_agents(
@@ -136,16 +146,67 @@ class PublishingModel(mesa.Model):
 
     @property
     def all_group_prestiges(self):
-        """Helper property to get all current group prestiges."""
-        return np.array([a.prestige for a in self.agents if isinstance(a, ResearcherGroupAgent)])
+        """
+        Helper property to get all current group prestiges.
+        """
+        return np.array([a.prestige for a in self.agents_by_type[ResearcherGroupAgent]])
 
     @property
     def all_journal_reputations(self):
-        """Helper property to get all current journal reputations."""
-        return np.array([a.reputation for a in self.agents if isinstance(a, JournalAgent)])
+        """
+        Helper property to get all current journal reputations.
+        """
+        return np.array([a.reputation for a in self.agents_by_type[JournalAgent]])
+
+    def _update_caches(self):
+        """
+        Calculate and cache step-level quantiles and journal data
+        to avoid redundant calculations by agents.
+        """
+        # Update Quantiles
+        group_prestiges = self.all_group_prestiges
+        journal_reputations = self.all_journal_reputations
+
+        # Calculate and cache quantiles
+        # Handle empty lists to avoid errors on step 0 if they were empty
+        if group_prestiges.size > 0:
+            self.group_quantile_90 = np.quantile(group_prestiges, 0.9)
+            self.group_quantile_50 = np.quantile(group_prestiges, 0.5)
+        else:
+            self.group_quantile_90 = 0
+            self.group_quantile_50 = 0
+
+        if journal_reputations.size > 0:
+            self.journal_quantile_90 = np.quantile(journal_reputations, 0.9)
+            self.journal_quantile_50 = np.quantile(journal_reputations, 0.5)
+        else:
+            self.journal_quantile_90 = 0
+            self.journal_quantile_50 = 0
+
+        # Update Journal Caches
+        # Get a plain list of journal agents
+        journal_agents = self.agents_by_type[JournalAgent]
+        self.cached_journal_list = journal_agents
+
+        # Cache ethics scores
+        self.cached_journal_ethics = np.array([j.ethics for j in journal_agents])
+
+        # Cache normalized reputation scores
+        reputations = np.array([j.reputation for j in journal_agents])
+        max_rep = reputations.max()
+
+        if max_rep == 0:
+            self.cached_journal_norm_reputations = reputations  # All zeros
+        else:
+            self.cached_journal_norm_reputations = reputations / max_rep
+
+
 
     def step(self):
         """Execute one time step of the simulation."""
+        # Update caches once at the start of the step
+        self._update_caches()
+
         self.agents_by_type[JournalAgent].shuffle_do("step")
         self.agents_by_type[ResearcherGroupAgent].shuffle_do("step")
         self.datacollector.collect(self)
