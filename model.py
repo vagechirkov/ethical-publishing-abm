@@ -58,10 +58,13 @@ class ResearcherGroupAgent(mesa.Agent):
 
         # Sort journals by score in descending order
         # We sort the actual journal objects based on the scores
-        sorted_journals = sorted(zip(journals, journal_scores), key=lambda x: x[1], reverse=True)
+        sorted_indices = np.argsort(journal_scores)[::-1]
 
         # Submission loop
-        for journal, score in sorted_journals:
+        for idx in sorted_indices:
+            # Get the corresponding journal
+            journal = journals[idx]
+
             # Attempt to publish in the current journal
             if self.rng.uniform(0, 1) < journal.acceptance_rate:
                 # --- Publication successful ---
@@ -80,11 +83,6 @@ class ResearcherGroupAgent(mesa.Agent):
 
                 # Stop submission process for this step
                 break
-
-    def step(self):
-        """The agent's action during a simulation step."""
-        self.submit_paper()
-
 
     def step(self):
         """The agent's action during a simulation step."""
