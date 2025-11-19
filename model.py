@@ -53,6 +53,10 @@ class JournalAgent(mesa.Agent):
 
     def step(self):
         """At the end of a step, reset per-step counters."""
+        # Reputation decays by a factor (e.g., 0.5%) every step.
+        decay_factor = 0.005
+        self.reputation *= (1 - decay_factor)
+
         self.revenue_this_step = 0
         self.papers_this_step = 0
 
@@ -109,7 +113,10 @@ class ResearcherGroupAgent(mesa.Agent):
 
                 # The Multiplier: The social amplification of that reward
                 # The more famous you are, the more you "squeeze out" of this success
-                social_multiplier = self.prestige * 0.01
+                # Unbounded linear growth: self.prestige * 0.01
+                # Diminishing returns: np.log1p(self.prestige) * 0.1
+                # social_multiplier = self.prestige * 0.01
+                social_multiplier = np.log1p(self.prestige) * 1.0
 
                 # Total Gain
                 total_gain = base_reward + (base_reward * social_multiplier)
