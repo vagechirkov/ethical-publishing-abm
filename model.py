@@ -54,7 +54,7 @@ class JournalAgent(mesa.Agent):
     def step(self):
         """At the end of a step, reset per-step counters."""
         # Reputation decays by a factor (e.g., 0.5%) every step.
-        decay_factor = 0.005
+        decay_factor = 0.0001
         self.reputation *= (1 - decay_factor)
 
         self.revenue_this_step = 0
@@ -115,8 +115,8 @@ class ResearcherGroupAgent(mesa.Agent):
                 # The more famous you are, the more you "squeeze out" of this success
                 # Unbounded linear growth: self.prestige * 0.01
                 # Diminishing returns: np.log1p(self.prestige) * 0.1
-                # social_multiplier = self.prestige * 0.01
-                social_multiplier = np.log1p(self.prestige) * 1.0
+                social_multiplier = self.prestige * 0.01
+                # social_multiplier = np.log1p(self.prestige) * 10.0
 
                 # Total Gain
                 total_gain = base_reward + (base_reward * social_multiplier)
@@ -168,7 +168,7 @@ class PublishingModel(mesa.Model):
             is_oa=self.rng.choice([0, 1], size=n_journals),
             cost=self.rng.choice([50, 500, 5000], size=n_journals),
             ethics=self.rng.uniform(0, 1, size=n_journals),
-            reputation=self.rng.exponential(scale=1 / 0.1, size=n_journals),
+            reputation=self.rng.exponential(scale=1 / 0.1, size=n_journals),  # or constant (e.g., all 1)
             acceptance_rate=self.rng.uniform(0, 1.0, size=n_journals),
         )
 
@@ -182,10 +182,15 @@ class PublishingModel(mesa.Model):
         ResearcherGroupAgent.create_agents(
             self,
             n_groups,
-            prestige=self.rng.exponential(scale=1 / 0.01, size=n_groups),
+            prestige=self.rng.exponential(scale=1 / 0.01, size=n_groups),   # or constant (e.g., all 1)
             weight_prestige=weight_prestige,
             weight_ethics=weight_ethics,
         )
+
+        model_reporters = {
+            "Gini_Researchers": lambda m: self._compute_gini(m.all_group_prestiges),
+            "Gini_Journals":  lambda m: self._compute_gini(m.all_journal_reputations)
+        }
 
         # DataCollector
         agent_reporters = {
@@ -198,7 +203,7 @@ class PublishingModel(mesa.Model):
             "Cost": lambda a: getattr(a, "cost", None),
             "OA": lambda a: getattr(a, "is_oa", None),
         }
-        self.datacollector = mesa.DataCollector(agent_reporters=agent_reporters)
+        self.datacollector = mesa.DataCollector(agent_reporters=agent_reporters, model_reporters=model_reporters)
 
     @property
     def all_group_prestiges(self):
@@ -213,6 +218,24 @@ class PublishingModel(mesa.Model):
         Helper property to get all current journal reputations.
         """
         return np.array([a.reputation for a in self.agents_by_type[JournalAgent]])
+
+    @staticmethod
+    def _compute_gini(array):
+        """
+        Calculates the Gini Coefficient for Researcher Prestige/Journal Reputation
+        """
+        # Handle edge case (all zeros) to avoid divide-by-zero errors
+        if np.sum(array) == 0:
+            return 0.0
+
+        # Sort smallest to largest
+        sorted_prestiges = np.sort(array)
+        n = len(array)
+
+        # Gini Formula (using cumulative mean relative difference)
+        # G = (2 * sum(i * x_i)) / (n * sum(x_i)) - (n + 1) / n
+        index = np.arange(1, n + 1)
+        return ((2 * np.sum(index * sorted_prestiges)) / (n * np.sum(sorted_prestiges))) - ((n + 1) / n)
 
     def _update_caches(self):
         # Researchers
@@ -256,9 +279,10 @@ class PublishingModel(mesa.Model):
 
     def step(self):
         self._update_caches()
+        self.datacollector.collect(self)
+
         self.agents_by_type[JournalAgent].shuffle_do("step")
         self.agents_by_type[ResearcherGroupAgent].shuffle_do("step")
-        self.datacollector.collect(self)
 
 
 if __name__ == "__main__":
@@ -267,7 +291,7 @@ if __name__ == "__main__":
         "n_journals": 10,
         "n_groups": 100,
         "ethics_weight_included": False,
-        "weight_contribution": 1,
+        "weight_contribution": 1.0,
         # "weight_prestige_max": [0.1, 0.9], # Compare low vs high prestige focus
     }
     max_steps = 1000
@@ -337,5 +361,32 @@ if __name__ == "__main__":
         x="Reputation", hue="Time",  # , col="weight_prestige_max",
         kind="hist", fill=True, common_norm=False, height=4, aspect=1.2
     ).set(title="Journal Reputation Distribution")
+    plt.tight_layout()
+    plt.show()
+
+    print("Plotting Comparative Gini Dynamics...")
+    df_gini = df.groupby("Step")[["Gini_Researchers", "Gini_Journals"]].median().reset_index()
+
+    df_melted = df_gini.melt(
+        id_vars=["Step"],
+        value_vars=["Gini_Researchers", "Gini_Journals"],
+        var_name="Metric",
+        value_name="Gini Coefficient"
+    )
+
+    plt.figure(figsize=(8, 5))
+    sns.lineplot(
+        data=df_melted,
+        x="Step",
+        y="Gini Coefficient",
+        hue="Metric",
+        palette={"Gini_Researchers": "blue", "Gini_Journals": "red"},
+        linewidth=2.5,
+    )
+
+    plt.title("Inequality Race: Researchers & Journals")
+    plt.ylim(0, 1.0)
+    plt.grid(True, alpha=0.3)
+    plt.ylabel("Inequality (0=Equal, 1=Monopoly)")
     plt.tight_layout()
     plt.show()
