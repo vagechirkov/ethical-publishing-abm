@@ -16,22 +16,26 @@ def contribution(cur_prestige, top_pres, low_pres, gain=1.0, loss=-1.0):
     else:
         return 0.0
 
-def acceptance_function(rng, journal_acc_rate, researcher_norm_prestige=0, journal_norm_reputation=0):
+
+def acceptance_function(
+    rng, journal_acc_rate, researcher_norm_prestige=0, journal_norm_reputation=0
+):
     """
     Determines if a paper is accepted.
     """
+    gap = researcher_norm_prestige - journal_norm_reputation
 
-    # Calculate modifier:
-    # If (prestige_factor > journal_norm_reputation), probability increases.
-    # We use a 0.5 multiplier to dampen the effect so it doesn't override base rate entirely.
-    modifier = (researcher_norm_prestige - journal_norm_reputation) * 0.5
+    # Steepness (k): Higher = stricter.
+    k = 15
 
-    prob = journal_acc_rate + modifier
+    #  Sigmoid Modifier [-0.5 to 0.5]
+    sigmoid_modifier = (1 / (1 + np.exp(-k * gap))) - 0.5
 
-    # Clamp probability between 5% and 95%
-    prob = max(0.05, min(prob, 0.95))
+    # Apply to base rate
+    prob = journal_acc_rate + sigmoid_modifier
 
-    return rng.uniform(0, 1) < prob
+    # Strict Clamping
+    return rng.uniform(0, 1) < max(0.001, min(prob, 0.999))
 
 
 class JournalAgent(mesa.Agent):
@@ -65,6 +69,7 @@ class ResearcherGroupAgent(mesa.Agent):
         journals = self.model.cached_journal_list
         rep_scores = self.model.cached_journal_norm_reputations
         ethics_scores = self.model.cached_journal_ethics
+        norm_prestige = self.prestige / self.model.all_group_prestiges.max()
 
         # Calculate weighted score
         journal_scores = (
@@ -83,7 +88,7 @@ class ResearcherGroupAgent(mesa.Agent):
             is_accepted = acceptance_function(
                 self.rng,
                 journal.acceptance_rate,
-                self.prestige / self.model.all_group_prestiges.max(),
+                norm_prestige,
                 norm_rep
             )
 
@@ -93,16 +98,25 @@ class ResearcherGroupAgent(mesa.Agent):
                                        contribution(self.prestige,
                                                     self.model.group_quantile_90,
                                                     self.model.group_quantile_50,
-                                                    gain=1,
+                                                    gain=norm_prestige * 1,
                                                     loss=0.0))
                 journal.revenue_this_step += journal.cost
                 journal.papers_this_step += 1
 
                 # Update this agent's state
+                # Base Reward: The objective value of the journal
+                base_reward = norm_rep * 1.0
+
+                # The Multiplier: The social amplification of that reward
+                # The more famous you are, the more you "squeeze out" of this success
+                social_multiplier = self.prestige * 0.01
+
+                # Total Gain
+                total_gain = base_reward + (base_reward * social_multiplier)
                 self.prestige += contribution(journal.reputation,
                                               self.model.journal_quantile_90,
                                               self.model.journal_quantile_50,
-                                              gain=10,
+                                              gain=total_gain,
                                               loss=0.0)
 
                 # Stop submission process for this step
@@ -138,6 +152,7 @@ class PublishingModel(mesa.Model):
         self.cached_journal_list = []
         self.cached_journal_ethics = np.array([])
         self.cached_journal_norm_reputations = np.array([])
+        self.cached_researcher_norm_prestiges = np.array([])
 
         # Create Journal Agents
         JournalAgent.create_agents(
@@ -242,13 +257,13 @@ class PublishingModel(mesa.Model):
 if __name__ == "__main__":
     print("Running ABM...")
     params = {
-        "n_journals": 30,
-        "n_groups": 300,
+        "n_journals": 10,
+        "n_groups": 100,
         "ethics_weight_included": False,
         "weight_contribution": 1,
         # "weight_prestige_max": [0.1, 0.9], # Compare low vs high prestige focus
     }
-    max_steps = 100
+    max_steps = 1000
     result = mesa.batch_run(
         PublishingModel,
         number_processes=None,
