@@ -102,7 +102,7 @@ class ResearcherGroupAgent(mesa.Agent):
                                        contribution(self.prestige,
                                                     self.model.group_quantile_90,
                                                     self.model.group_quantile_50,
-                                                    gain=norm_prestige * 1,
+                                                    gain=norm_prestige * 1.0,
                                                     loss=0.0))
                 journal.revenue_this_step += journal.cost
                 journal.papers_this_step += 1
@@ -120,11 +120,12 @@ class ResearcherGroupAgent(mesa.Agent):
 
                 # Total Gain
                 total_gain = base_reward + (base_reward * social_multiplier)
-                self.prestige += contribution(journal.reputation,
-                                              self.model.journal_quantile_90,
-                                              self.model.journal_quantile_50,
-                                              gain=total_gain,
-                                              loss=0.0)
+                # self.prestige += contribution(journal.reputation,
+                #                               self.model.journal_quantile_90,
+                #                               self.model.journal_quantile_50,
+                #                               gain=total_gain,
+                #                               loss=0.0)
+                self.prestige += total_gain
 
                 # Stop submission process for this step
                 break
