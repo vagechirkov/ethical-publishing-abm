@@ -5,68 +5,78 @@ from matplotlib import pyplot as plt
 import seaborn as sns
 
 
-def contribution(cur_prestige, top_pres, low_pres, gain=1.0, loss=-1.0):
-    """
-    Calculates the change in value based on current standing relative to quantiles.
-    """
-    if cur_prestige >= top_pres:
-        return gain
-    elif cur_prestige <= low_pres:
-        return loss
-    else:
-        return 0.0
-
-
-def acceptance_function(
-    rng, journal_acc_rate, researcher_norm_prestige=0, journal_norm_reputation=0
-):
-    """
-    Determines if a paper is accepted.
-    """
-    gap = researcher_norm_prestige - journal_norm_reputation
-
-    # Steepness (k): Higher = stricter.
-    k = 15
-
-    #  Sigmoid Modifier [-0.5 to 0.5]
-    sigmoid_modifier = (1 / (1 + np.exp(-k * gap))) - 0.5
-
-    # Apply to base rate
-    prob = journal_acc_rate + sigmoid_modifier
-
-    # Strict Clamping
-    return rng.uniform(0, 1) < max(0.001, min(prob, 0.999))
-
-
 class JournalAgent(mesa.Agent):
-    def __init__(self, model, is_oa, cost, ethics, reputation, acceptance_rate):
+    def __init__(
+        self,
+        model,
+        is_oa,
+        cost,
+        ethics,
+        reputation,
+        acceptance_rate,
+        reputation_decay,
+        acceptance_modifier_k,
+        prestige_to_reputation_contribution_weight,
+    ):
         super().__init__(model)
         self.is_oa = is_oa
         self.cost = cost
         self.ethics = ethics
         self.reputation = reputation
         self.acceptance_rate = acceptance_rate
+        self.reputation_decay = reputation_decay
+        self.acceptance_modifier_k = acceptance_modifier_k
+        self.prestige_to_reputation_contribution_weight = prestige_to_reputation_contribution_weight
 
         # Step-specific metrics
         self.revenue_this_step = 0
         self.papers_this_step = 0
 
+    def acceptance_function(
+        self, researcher_norm_prestige=0, journal_norm_reputation=0
+    ):
+        """
+        Determines if a paper is accepted.
+        k: Steepness of the sigmoid. Higher = stricter based on gap.
+        """
+        gap = researcher_norm_prestige - journal_norm_reputation
+
+        #  Sigmoid Modifier [-0.5 to 0.5]
+        sigmoid_modifier = (1 / (1 + np.exp(-self.acceptance_modifier_k * gap))) - 0.5
+
+        # Apply to base rate
+        prob = self.acceptance_rate + sigmoid_modifier
+
+        # Strict Clamping
+        return self.rng.uniform(0, 1) < max(0.001, min(prob, 0.999))
+
+    def contribution_reputation(self, current_researcher_prestige, gain=1.0, loss=-1.0):
+        """
+        Calculates the change in value based on current standing relative to quantiles.
+        """
+        if current_researcher_prestige >= self.model.group_quantile_90:
+            return gain * self.prestige_to_reputation_contribution_weight
+        elif current_researcher_prestige <= self.model.group_quantile_50:
+            return loss
+        else:
+            return 0.0
+
     def step(self):
         """At the end of a step, reset per-step counters."""
-        # Reputation decays by a factor (e.g., 0.5%) every step.
-        decay_factor = 0.0001
-        self.reputation *= (1 - decay_factor)
+        # Reputation decays by a factor every step.
+        self.reputation *= 1 - self.reputation_decay
 
         self.revenue_this_step = 0
         self.papers_this_step = 0
 
 
 class ResearcherGroupAgent(mesa.Agent):
-    def __init__(self, model, prestige, weight_prestige, weight_ethics):
+    def __init__(self, model, prestige, weight_prestige, weight_ethics, social_multiplier_factor):
         super().__init__(model)
         self.prestige = prestige
         self.weight_prestige = weight_prestige
         self.weight_ethics = weight_ethics
+        self.social_multiplier_factor = social_multiplier_factor
 
     def submit_paper(self):
         """Score journals, sort them, and attempt to publish a paper."""
@@ -89,45 +99,31 @@ class ResearcherGroupAgent(mesa.Agent):
             journal = journals[idx]
             norm_rep = rep_scores[idx]  # Get normalized reputation for this journal
 
-            is_accepted = acceptance_function(
-                self.rng,
-                journal.acceptance_rate,
-                norm_prestige,
-                norm_rep
-            )
-
-            if is_accepted:
+            if journal.acceptance_function(norm_prestige, norm_rep):
                 # Update journal state
-                journal.reputation += (self.model.weight_contribution *
-                                       contribution(self.prestige,
-                                                    self.model.group_quantile_90,
-                                                    self.model.group_quantile_50,
-                                                    gain=norm_prestige * 1,
-                                                    loss=0.0))
+                journal.reputation += journal.contribution_reputation(
+                    self.prestige, gain=norm_prestige, loss=0.0
+                )
                 journal.revenue_this_step += journal.cost
                 journal.papers_this_step += 1
 
-                # Update this agent's state
-                # Base Reward: The objective value of the journal
-                base_reward = norm_rep * 1.0
-
-                # The Multiplier: The social amplification of that reward
-                # The more famous you are, the more you "squeeze out" of this success
-                # Unbounded linear growth: self.prestige * 0.01
-                # Diminishing returns: np.log1p(self.prestige) * 0.1
-                social_multiplier = self.prestige * 0.01
-                # social_multiplier = np.log1p(self.prestige) * 10.0
-
-                # Total Gain
-                total_gain = base_reward + (base_reward * social_multiplier)
-                self.prestige += contribution(journal.reputation,
-                                              self.model.journal_quantile_90,
-                                              self.model.journal_quantile_50,
-                                              gain=total_gain,
-                                              loss=0.0)
+                # Update this agent's prestige
+                self.prestige += self.contribution_prestige(self.prestige, norm_rep)
 
                 # Stop submission process for this step
                 break
+
+    def contribution_prestige(self, current_prestige, norm_rep) -> float:
+        # Base Reward: The objective value of the journal
+        base_reward = norm_rep
+
+        # The Multiplier: The social amplification of that reward
+        # The more famous you are, the more you "squeeze out" of this success
+        social_multiplier = current_prestige * self.social_multiplier_factor
+
+        # Total Gain
+        total_gain = base_reward + (base_reward * social_multiplier)
+        return total_gain
 
     def step(self):
         """The agent's action during a simulation step."""
@@ -138,18 +134,20 @@ class PublishingModel(mesa.Model):
     """The main model that runs the simulation."""
 
     def __init__(
-        self,
-        n_groups,
-        n_journals,
-        weight_contribution=0.1,
-        ethics_weight_included=True,
-        weight_prestige_max=0.1,
-        seed=None,
+            self,
+            n_groups,
+            n_journals,
+            researcher_ethics_weight_included=True,
+            researcher_weight_prestige_max=0.1,
+            researcher_social_multiplier_factor=0.01,
+            journal_reputation_decay=0.0001,
+            journal_acceptance_modifier_k=15,
+            journal_prestige_to_reputation_contribution_weight=0.1,
+            seed=None,
     ):
         super().__init__(seed=seed)
         self.n_groups = n_groups
         self.n_journals = n_journals
-        self.weight_contribution = weight_contribution
 
         # Step-level caches
         self.group_quantile_90 = 0
@@ -168,13 +166,17 @@ class PublishingModel(mesa.Model):
             is_oa=self.rng.choice([0, 1], size=n_journals),
             cost=self.rng.choice([50, 500, 5000], size=n_journals),
             ethics=self.rng.uniform(0, 1, size=n_journals),
-            reputation=self.rng.exponential(scale=1 / 0.1, size=n_journals),  # or constant (e.g., all 1)
+            reputation=self.rng.exponential(scale=1 / 0.1, size=n_journals),
             acceptance_rate=self.rng.uniform(0, 1.0, size=n_journals),
+            reputation_decay=journal_reputation_decay,
+            acceptance_modifier_k=journal_acceptance_modifier_k,
+            prestige_to_reputation_contribution_weight=journal_prestige_to_reputation_contribution_weight,
+
         )
 
         # Create Researcher Group Agents
-        if ethics_weight_included:
-            weight_prestige = self.rng.uniform(0, weight_prestige_max, size=n_groups)
+        if researcher_ethics_weight_included:
+            weight_prestige = self.rng.uniform(0, researcher_weight_prestige_max, size=n_groups)
             weight_ethics = 1 - weight_prestige
         else:
             weight_prestige, weight_ethics = 1, 0
@@ -182,9 +184,10 @@ class PublishingModel(mesa.Model):
         ResearcherGroupAgent.create_agents(
             self,
             n_groups,
-            prestige=self.rng.exponential(scale=1 / 0.01, size=n_groups),   # or constant (e.g., all 1)
+            prestige=self.rng.exponential(scale=1 / 0.01, size=n_groups),
             weight_prestige=weight_prestige,
             weight_ethics=weight_ethics,
+            social_multiplier_factor=researcher_social_multiplier_factor,
         )
 
         model_reporters = {
@@ -207,33 +210,22 @@ class PublishingModel(mesa.Model):
 
     @property
     def all_group_prestiges(self):
-        """
-        Helper property to get all current group prestiges.
-        """
+        """Helper property to get all current group prestiges."""
         return np.array([a.prestige for a in self.agents_by_type[ResearcherGroupAgent]])
 
     @property
     def all_journal_reputations(self):
-        """
-        Helper property to get all current journal reputations.
-        """
+        """Helper property to get all current journal reputations."""
         return np.array([a.reputation for a in self.agents_by_type[JournalAgent]])
 
     @staticmethod
     def _compute_gini(array):
-        """
-        Calculates the Gini Coefficient for Researcher Prestige/Journal Reputation
-        """
-        # Handle edge case (all zeros) to avoid divide-by-zero errors
+        """Calculates the Gini Coefficient for Researcher Prestige/Journal Reputation"""
         if np.sum(array) == 0:
             return 0.0
 
-        # Sort smallest to largest
         sorted_prestiges = np.sort(array)
         n = len(array)
-
-        # Gini Formula (using cumulative mean relative difference)
-        # G = (2 * sum(i * x_i)) / (n * sum(x_i)) - (n + 1) / n
         index = np.arange(1, n + 1)
         return ((2 * np.sum(index * sorted_prestiges)) / (n * np.sum(sorted_prestiges))) - ((n + 1) / n)
 
@@ -290,9 +282,12 @@ if __name__ == "__main__":
     params = {
         "n_journals": 10,
         "n_groups": 100,
-        "ethics_weight_included": False,
-        "weight_contribution": 1.0,
-        # "weight_prestige_max": [0.1, 0.9], # Compare low vs high prestige focus
+        # "researcher_weight_prestige_max": [0.1, 0.9], # Compare low vs high prestige focus
+        "researcher_ethics_weight_included": False,
+        "researcher_social_multiplier_factor": 0.01,  # Rich-get-richer coefficient
+        "journal_reputation_decay": 0.0001,  # Reputation decay per step
+        "journal_acceptance_modifier_k": 15,  # Acceptance steepness
+        "journal_prestige_to_reputation_contribution_weight": 1.0,  # former "weight_contribution"
     }
     max_steps = 1000
     result = mesa.batch_run(
@@ -309,10 +304,10 @@ if __name__ == "__main__":
 
     print("Plotting Dynamics...")
 
-    # 1. Dynamics of Papers (Original)
+    # 1. Dynamics of Papers
     g1 = sns.relplot(
         data=df[df["Type"] == "JournalAgent"],
-        x='Step', y='NPapers', hue='Ethics Group',  # col='weight_prestige_max',
+        x='Step', y='NPapers', hue='Ethics Group',
         kind='line', estimator=np.sum, errorbar='ci',
         palette={'High Ethics': 'red', 'Low Ethics': 'blue'},
         height=4, aspect=1.5
@@ -320,13 +315,13 @@ if __name__ == "__main__":
     plt.tight_layout()
     plt.show()
 
-    # 2. Dynamics of Mean Prestige/Reputation (Line Plots)
+    # 2. Dynamics of Mean Prestige/Reputation
     fig, axes = plt.subplots(1, 2, figsize=(12, 5))
 
     # Researchers
     sns.lineplot(
         data=df[df["Type"] == "ResearcherGroupAgent"],
-        x='Step', y='Prestige', #  hue='weight_prestige_max',
+        x='Step', y='Prestige',
         estimator=np.median,
         errorbar=('pi', 80),
         ax=axes[0]
@@ -336,7 +331,7 @@ if __name__ == "__main__":
     # Journals
     sns.lineplot(
         data=df[df["Type"] == "JournalAgent"],
-        x='Step', y='Reputation',#  hue='weight_prestige_max',
+        x='Step', y='Reputation',
         estimator=np.median,
         errorbar=('pi', 80),
         ax=axes[1]
@@ -350,7 +345,7 @@ if __name__ == "__main__":
 
     g3 = sns.displot(
         data=df_dist[df_dist["Type"] == "ResearcherGroupAgent"],
-        x="Prestige", hue="Time",  # , col="weight_prestige_max",
+        x="Prestige", hue="Time",
         kind="hist", fill=True, common_norm=False, height=4, aspect=1.2,
     ).set(title="Researcher Prestige Distribution")
     plt.tight_layout()
@@ -358,7 +353,7 @@ if __name__ == "__main__":
 
     g4 = sns.displot(
         data=df_dist[df_dist["Type"] == "JournalAgent"],
-        x="Reputation", hue="Time",  # , col="weight_prestige_max",
+        x="Reputation", hue="Time",
         kind="hist", fill=True, common_norm=False, height=4, aspect=1.2
     ).set(title="Journal Reputation Distribution")
     plt.tight_layout()
