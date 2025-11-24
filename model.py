@@ -5,18 +5,6 @@ from matplotlib import pyplot as plt
 import seaborn as sns
 
 
-def contribution(cur_prestige, top_pres, low_pres, gain=1.0, loss=-1.0):
-    """
-    Calculates the change in value based on current standing relative to quantiles.
-    """
-    if cur_prestige >= top_pres:
-        return gain
-    elif cur_prestige <= low_pres:
-        return loss
-    else:
-        return 0.0
-
-
 def acceptance_function(
     rng, journal_acc_rate, researcher_norm_prestige=0, journal_norm_reputation=0
 ):
@@ -98,37 +86,57 @@ class ResearcherGroupAgent(mesa.Agent):
 
             if is_accepted:
                 # Update journal state
-                journal.reputation += (self.model.weight_contribution *
-                                       contribution(self.prestige,
-                                                    self.model.group_quantile_90,
-                                                    self.model.group_quantile_50,
-                                                    gain=norm_prestige * 1.0,
-                                                    loss=0.0))
+                journal.reputation += (
+
+                    self.contribution_reputation(
+                        self.prestige,
+                        self.model.group_quantile_90,
+                        self.model.group_quantile_50,
+                        gain=norm_prestige * self.model.weight_contribution * 1.0,
+                        loss=0.0,
+                    )
+                )
                 journal.revenue_this_step += journal.cost
                 journal.papers_this_step += 1
 
-                # Update this agent's state
-                # Base Reward: The objective value of the journal
-                base_reward = norm_rep * 1.0
-
-                # The Multiplier: The social amplification of that reward
-                # The more famous you are, the more you "squeeze out" of this success
-                # Unbounded linear growth: self.prestige * 0.01
-                # Diminishing returns: np.log1p(self.prestige) * 0.1
-                social_multiplier = self.prestige * 0.01
-                # social_multiplier = np.log1p(self.prestige) * 10.0
-
-                # Total Gain
-                total_gain = base_reward + (base_reward * social_multiplier)
-                # self.prestige += contribution(journal.reputation,
-                #                               self.model.journal_quantile_90,
-                #                               self.model.journal_quantile_50,
-                #                               gain=total_gain,
-                #                               loss=0.0)
-                self.prestige += total_gain
+                # Update this agent's prestige
+                self.prestige += self.contribution_prestige(self.prestige, norm_rep)
 
                 # Stop submission process for this step
                 break
+
+    @staticmethod
+    def contribution_reputation(current_prestige, top_pres, low_pres, gain=1.0, loss=-1.0):
+        """
+        Calculates the change in value based on current standing relative to quantiles.
+        """
+        if current_prestige >= top_pres:
+            return gain
+        elif current_prestige <= low_pres:
+            return loss
+        else:
+            return 0.0
+
+    @staticmethod
+    def contribution_prestige(current_prestige, norm_rep) -> float:
+        # Base Reward: The objective value of the journal
+        base_reward = norm_rep * 1.0
+
+        # The Multiplier: The social amplification of that reward
+        # The more famous you are, the more you "squeeze out" of this success
+        # Unbounded linear growth: self.prestige * 0.01
+        # Diminishing returns: np.log1p(self.prestige) * 0.1
+        social_multiplier = current_prestige * 0.01
+        # social_multiplier = np.log1p(self.prestige) * 10.0
+
+        # Total Gain
+        total_gain = base_reward + (base_reward * social_multiplier)
+        # self.prestige += contribution(journal.reputation,
+        #                               self.model.journal_quantile_90,
+        #                               self.model.journal_quantile_50,
+        #                               gain=total_gain,
+        #                               loss=0.0)
+        return total_gain
 
     def step(self):
         """The agent's action during a simulation step."""
