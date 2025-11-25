@@ -1,387 +1,443 @@
 import mesa
 import numpy as np
-import pandas as pd
-from matplotlib import pyplot as plt
-import seaborn as sns
-
+from scipy.special import expit, softmax
 
 class JournalAgent(mesa.Agent):
     def __init__(
-        self,
-        model,
-        is_oa,
-        cost,
-        ethics,
-        reputation,
-        acceptance_rate,
-        reputation_decay,
-        acceptance_modifier_k,
-        prestige_to_reputation_contribution_weight,
+            self,
+            model,
+            selectivity_threshold_theta, # theta_j
+            screening_noise_tau,         # tau_j
+            bias_weight_b,               # b_j
+            apc_cost,                    # C_j
+            reinvestment_rate,           # rho_j
+            ethics_score,                # E_j
+            initial_reputation,          # R_j(0)
+            reputation_decay,            # delta_R
+            quality_to_reputation_alpha, # alpha_R
+            type_label=""
     ):
         super().__init__(model)
-        self.is_oa = is_oa
-        self.cost = cost
-        self.ethics = ethics
-        self.reputation = reputation
-        self.acceptance_rate = acceptance_rate
-        self.reputation_decay = reputation_decay
-        self.acceptance_modifier_k = acceptance_modifier_k
-        self.prestige_to_reputation_contribution_weight = prestige_to_reputation_contribution_weight
 
-        # Step-specific metrics
-        self.revenue_this_step = 0
-        self.papers_this_step = 0
+        self.type_label = type_label
 
-    def acceptance_function(
-        self, researcher_norm_prestige=0, journal_norm_reputation=0
-    ):
+        # Editorial Parameters
+        self.theta = selectivity_threshold_theta
+        self.tau = screening_noise_tau
+        self.b_bias = bias_weight_b
+        self.ethics = ethics_score
+
+        # Economic Parameters
+        self.apc = apc_cost
+        self.reinvestment_rate = reinvestment_rate
+
+        # State
+        self.reputation = initial_reputation
+
+        # Dynamics Parameters
+        self.decay = reputation_decay
+        self.alpha = quality_to_reputation_alpha
+
+        # Step metrics
+        self.papers_accepted = 0
+        self.revenue = 0
+
+    def evaluate_submission(self, paper_quality, author_norm_prestige):
         """
-        Determines if a paper is accepted.
-        k: Steepness of the sigmoid. Higher = stricter based on gap.
+        Calculates acceptance probability based on biased signal and screening function.
+        Ref: Equations (2) and (3)
         """
-        gap = researcher_norm_prestige - journal_norm_reputation
+        # Biased Signal: q_hat = q + b * P_norm
+        perceived_quality = paper_quality + (self.b_bias * author_norm_prestige)
 
-        #  Sigmoid Modifier [-0.5 to 0.5]
-        sigmoid_modifier = (1 / (1 + np.exp(-self.acceptance_modifier_k * gap))) - 0.5
+        # Screening Probability: sigmoid((q_hat - theta) / tau)
+        prob_accept = expit((perceived_quality - self.theta) / self.tau)
 
-        # Apply to base rate
-        prob = self.acceptance_rate + sigmoid_modifier
+        # Bernoulli trial
+        return  self.rng.random() < prob_accept
 
-        # Strict Clamping
-        return self.rng.uniform(0, 1) < max(0.001, min(prob, 0.999))
-
-    def contribution_reputation(self, current_researcher_prestige, gain=1.0, loss=-1.0):
+    def update_reputation(self, paper_quality):
         """
-        Calculates the change in value based on current standing relative to quantiles.
+        Ref: Equations (11) and (12)
+        R(t+1) = alpha * log(1 + max(q,0))
         """
-        if current_researcher_prestige >= self.model.group_quantile_90:
-            return gain * self.prestige_to_reputation_contribution_weight
-        elif current_researcher_prestige <= self.model.group_quantile_50:
-            return loss
-        else:
-            return 0.0
+        # Saturating function f_R(q)
+        f_q = np.log(1 + max(paper_quality, 0))
+
+        self.reputation += self.alpha * f_q
 
     def step(self):
-        """At the end of a step, reset per-step counters."""
-        # Reputation decays by a factor every step.
-        self.reputation *= 1 - self.reputation_decay
+        # Reputation decays by a factor every step
+        # R(t+1) = (1-delta)*R(t)
+        self.reputation *= (1 - self.decay)
 
-        self.revenue_this_step = 0
-        self.papers_this_step = 0
+        # Reset counters
+        self.papers_accepted = 0
+        self.revenue = 0
 
 
 class ResearcherGroupAgent(mesa.Agent):
-    def __init__(self, model, prestige, weight_prestige, weight_ethics, social_multiplier_factor):
+    def __init__(
+            self,
+            model,
+            initial_prestige,      # P_i(0)
+            initial_budget,        # B_i(0)
+            baseline_quality_q0,   # q_0
+            quality_noise_q,       # q
+            quality_slope_kappa,   # kappa (prestige impact)
+            budget_slope_lambda,   # lambda (budget impact)
+            prestige_decay,        # delta_P
+            prestige_social_multiplier,
+            quality_to_prestige_beta, # beta_P
+            weights_utility,       # [w_R, w_E, w_C]
+            rationality_beta,      # beta (softmax temp)
+            funding_params         # {G0, gamma}
+    ):
         super().__init__(model)
-        self.prestige = prestige
-        self.weight_prestige = weight_prestige
-        self.weight_ethics = weight_ethics
-        self.social_multiplier_factor = social_multiplier_factor
+        self.type_label = ""
 
-    def submit_paper(self):
-        """Score journals, sort them, and attempt to publish a paper."""
-        journals = self.model.cached_journal_list
-        rep_scores = self.model.cached_journal_norm_reputations
-        ethics_scores = self.model.cached_journal_ethics
-        norm_prestige = self.prestige / self.model.all_group_prestiges.max()
+        self.prestige = initial_prestige
+        self.budget = initial_budget
 
-        # Calculate weighted score
-        journal_scores = (
-                self.weight_prestige * rep_scores +
-                self.weight_ethics * ethics_scores
+        # Production Parameters
+        self.q0 = baseline_quality_q0
+        self.quality_noise = quality_noise_q
+        self.kappa = quality_slope_kappa
+        self.lamb = budget_slope_lambda
+
+        # Dynamics Parameters
+        self.decay = prestige_decay
+        self.social_multiplier = prestige_social_multiplier
+        self.beta_P = quality_to_prestige_beta
+
+        # Decision Parameters
+        self.w_R, self.w_E, self.w_C = weights_utility
+        self.rationality_beta = rationality_beta
+
+        # Economic Parameters
+        self.G0 = funding_params['G0']
+        self.gamma = funding_params['gamma']
+
+        self.last_paper_quality = 0
+        self.accepted_this_step = False
+
+    def produce_manuscript(self):
+        """
+        Generates latent quality q_{i,t}.
+        Ref: Equation (1) and (10)
+        mu = q0 + kappa*log(1+P) + lambda*log(1+B)
+        """
+        mu = (self.q0 +
+              self.kappa * np.log(1 + self.prestige) +
+              self.lamb * np.log(1 + max(0, self.budget)))
+
+        # Draw from Normal distribution
+        q_it = self.rng.normal(mu, self.quality_noise)
+        return q_it
+
+    def choose_target_journal(self):
+        """
+        Calculates Utility and uses Softmax to choose a journal.
+        Ref: Equations (8) and (9)
+        """
+        journals = self.model.agents_by_type[JournalAgent]
+
+        # Gather metrics for calculation
+        reputations = np.array([j.reputation for j in journals])
+        ethics = np.array([j.ethics for j in journals])
+        costs = np.array([j.apc for j in journals])
+
+        # Normalize metrics for the utility function (as per text descriptions)
+        max_rep = np.max(reputations) if np.max(reputations) > 0 else 1.0
+        norm_reputations = reputations / max_rep
+
+        max_cost = np.max(costs) if np.max(costs) > 0 else 1.0
+        norm_costs = costs / max_cost
+
+        # Calculate Utility: U = w_R * R + w_E * E - w_C * C
+        utilities = (
+                self.w_R * norm_reputations +
+                self.w_E * ethics -
+                self.w_C * norm_costs
         )
 
-        # Sort journals by score in descending order
-        sorted_indices = np.argsort(journal_scores)[::-1]
+        # Mask unaffordable journals (Prob = 0)
+        # "Affordability is enforced by setting Pr=0 whenever B < C"
+        affordable_mask = (costs <= self.budget)
 
-        # Submission loop
-        for idx in sorted_indices:
-            journal = journals[idx]
-            norm_rep = rep_scores[idx]  # Get normalized reputation for this journal
+        if not np.any(affordable_mask):
+            return None # Cannot afford any journal
 
-            if journal.acceptance_function(norm_prestige, norm_rep):
-                # Update journal state
-                journal.reputation += journal.contribution_reputation(
-                    self.prestige, gain=norm_prestige, loss=0.0
-                )
-                journal.revenue_this_step += journal.cost
-                journal.papers_this_step += 1
+        # Apply Softmax to affordable utilities
+        # We set unaffordable utilities to -infinity so exp(U) is 0
+        masked_utilities = np.where(affordable_mask, utilities, -np.inf)
 
-                # Update this agent's prestige
-                self.prestige += self.contribution_prestige(self.prestige, norm_rep)
+        probs = softmax(self.rationality_beta * masked_utilities)
 
-                # Stop submission process for this step
-                break
+        # Choose journal based on probs
+        chosen_journal = self.rng.choice(journals, p=probs)
+        return chosen_journal
 
-    def contribution_prestige(self, current_prestige, norm_rep) -> float:
-        # Base Reward: The objective value of the journal
-        base_reward = norm_rep
+    def update_prestige(self, paper_quality, journal_norm_reputation):
+        """
+        Ref: Equation (13)
+        P(t+1) = (1-delta)P + beta_P * R_norm * f_P(q)
+        """
+        f_p = np.log(1 + max(paper_quality, 0))
 
-        # The Multiplier: The social amplification of that reward
-        # The more famous you are, the more you "squeeze out" of this success
-        social_multiplier = current_prestige * self.social_multiplier_factor
+        self.prestige = (
+                (1 - self.decay) * self.prestige +
+                self.beta_P * journal_norm_reputation * f_p +
+                self.prestige * journal_norm_reputation * f_p * self.social_multiplier
+        )
 
-        # Total Gain
-        total_gain = base_reward + (base_reward * social_multiplier)
-        return total_gain
+    def receive_funding(self, norm_prestige):
+        """
+        Ref: Equation (4) and (5)
+        G_i(t) = G0 + gamma * P_norm
+        """
+        grant = self.G0 + self.gamma * norm_prestige
+        self.budget += grant
 
     def step(self):
-        """The agent's action during a simulation step."""
-        self.submit_paper()
+        # 1. Produce Paper
+        q_it = self.produce_manuscript()
+        self.last_paper_quality = q_it
+        self.accepted_this_step = False
+
+        # 2. Choose Target
+        target_journal = self.choose_target_journal()
+
+        # 3. Submit (if affordable target found)
+        if target_journal:
+            # We calculate normalized prestige for the journal's assessment
+            max_p = self.model.max_prestige if self.model.max_prestige > 0 else 1.0
+            norm_prestige = self.prestige / max_p
+
+            # 4. Assessment
+            accepted = target_journal.evaluate_submission(q_it, norm_prestige)
+
+            if accepted:
+                self.accepted_this_step = True
+
+                # Transaction
+                self.budget -= target_journal.apc
+                target_journal.revenue += target_journal.apc
+                target_journal.papers_accepted += 1
+
+                # Reinvestment
+                self.model.handle_reinvestment(target_journal.apc, target_journal.reinvestment_rate)
+
+                # Updates
+                target_journal.update_reputation(q_it)
+
+                # Update Researcher Prestige
+                # Need current normalized journal reputation
+                max_r = self.model.max_reputation if self.model.max_reputation > 0 else 1.0
+                norm_rep = target_journal.reputation / max_r
+                self.update_prestige(q_it, norm_rep)
+
+        # Prestige decay happens regardless of publication (implicit in eq 13 if second term is 0)
+        # However, to be strict with Eq 13, it's an update rule *upon publication*.
+        # if no publication, prestige just decays
+        if not self.accepted_this_step:
+            self.prestige *= (1 - self.decay)
 
 
 class PublishingModel(mesa.Model):
-    """The main model that runs the simulation."""
-
     def __init__(
             self,
-            n_groups,
-            n_journals,
-            researcher_ethics_weight_included=True,
-            researcher_weight_prestige_max=0.1,
-            researcher_social_multiplier_factor=0.01,
-            journal_reputation_decay=0.0001,
-            journal_acceptance_modifier_k=15,
-            journal_prestige_to_reputation_contribution_weight=0.1,
-            seed=None,
-    ):
+            n_groups: int = 50,
+            n_journals: int = 10,
+
+            # Researcher Params
+            baseline_quality_q0: float = 1.0,
+            quality_noise_q: float = 0.5,
+            quality_slope_kappa: float = 0.5,
+            budget_slope_lambda: float = 0.2, # budget_slope
+            prestige_decay: float = 0.05,
+            prestige_social_multiplier: float = 0.0,
+            beta_p: float = 0.5,
+            researcher_preferences: tuple = (1.0, 0.0, 0.0),  # weights: reputation, ethics, cost
+            g0: float = 100,
+            gamma: float = 50, # Funding Matthew effect
+
+            # Journal Params (Distributions)
+            journal_reputation_decay: float = 0.05,
+            alpha_r: float = 0.5,
+            journal_category_ratio: tuple = (0.4, 0.4, 0.2),  # Predatory, Commercial, Society
+
+            # Simulation
+            seed: float = None
+    ) -> None:
         super().__init__(seed=seed)
+        assert n_journals % 10 == 0, "N Journals must be divisible by 10"
+
         self.n_groups = n_groups
         self.n_journals = n_journals
+        self.reinvestment_pool = 0 # Temporary storage for step
 
-        # Step-level caches
-        self.group_quantile_90 = 0
-        self.group_quantile_50 = 0
-        self.journal_quantile_90 = 0
-        self.journal_quantile_50 = 0
-        self.cached_journal_list = []
-        self.cached_journal_ethics = np.array([])
-        self.cached_journal_norm_reputations = np.array([])
-        self.cached_researcher_norm_prestiges = np.array([])
+        self.max_prestige = 1.0
+        self.max_reputation = 1.0
 
-        # Create Journal Agents
-        JournalAgent.create_agents(
-            self,
-            n_journals,
-            is_oa=self.rng.choice([0, 1], size=n_journals),
-            cost=self.rng.choice([50, 500, 5000], size=n_journals),
-            ethics=self.rng.uniform(0, 1, size=n_journals),
-            reputation=self.rng.exponential(scale=1 / 0.1, size=n_journals),
-            acceptance_rate=self.rng.uniform(0, 1.0, size=n_journals),
-            reputation_decay=journal_reputation_decay,
-            acceptance_modifier_k=journal_acceptance_modifier_k,
-            prestige_to_reputation_contribution_weight=journal_prestige_to_reputation_contribution_weight,
+        # Create Journals with heterogeneous types
+        # Predatory (High Cost, Zero ethics, No screening),
+        # Commercial (High Cost, Low ethics, Good screening),
+        # Ethical/Society (Low Cost, High ethics, Good screening)
+        for j_category, ratio in zip(['predatory', 'commercial', 'society'], journal_category_ratio):
+            n_journals_in_category = int(ratio * n_journals)
+            labels = [j_category for _ in range(n_journals_in_category)]
+            if j_category == 'predatory':
+                JournalAgent.create_agents(
+                    self,
+                    n_journals_in_category,
+                    selectivity_threshold_theta=-10.0,  # Accepts almost anything
+                    screening_noise_tau=0.5,
+                    bias_weight_b=0,
+                    apc_cost=20,
+                    reinvestment_rate=0.0,  # No reinvestment
+                    ethics_score=0.1,
+                    initial_reputation=1,
+                    reputation_decay=journal_reputation_decay,
+                    quality_to_reputation_alpha=alpha_r,
+                    type_label=labels,
+                )
+            elif j_category == 'commercial':
+                JournalAgent.create_agents(
+                    self,
+                    n_journals_in_category,
+                    selectivity_threshold_theta=self.rng.uniform(1, 3, n_journals_in_category),
+                    screening_noise_tau=0.5,
+                    bias_weight_b=0.5,  # Likes famous authors
+                    apc_cost=30,
+                    reinvestment_rate=0.05,  # Minimal reinvestment
+                    ethics_score=0.4,
+                    initial_reputation=40,
+                    reputation_decay=journal_reputation_decay,
+                    quality_to_reputation_alpha=alpha_r,
+                    type_label=labels,
+                )
+            elif j_category == "society":
+                JournalAgent.create_agents(
+                    self,
+                    n_journals_in_category,
+                    selectivity_threshold_theta=self.rng.uniform(1, 3, n_journals_in_category),
+                    screening_noise_tau=0.5,
+                    bias_weight_b=0.1,  # Fairer
+                    apc_cost=5,
+                    reinvestment_rate=0.8,  # High reinvestment
+                    ethics_score=0.9,
+                    initial_reputation=40,
+                    reputation_decay=journal_reputation_decay,
+                    quality_to_reputation_alpha=alpha_r,
+                    type_label=j_category,
+                )
+            else:
+                raise NotImplementedError(f"{j_category} not implemented")
 
-        )
-
-        # Create Researcher Group Agents
-        if researcher_ethics_weight_included:
-            weight_prestige = self.rng.uniform(0, researcher_weight_prestige_max, size=n_groups)
-            weight_ethics = 1 - weight_prestige
-        else:
-            weight_prestige, weight_ethics = 1, 0
-
+        # Create Researchers
         ResearcherGroupAgent.create_agents(
             self,
             n_groups,
-            prestige=self.rng.exponential(scale=1 / 0.01, size=n_groups),
-            weight_prestige=weight_prestige,
-            weight_ethics=weight_ethics,
-            social_multiplier_factor=researcher_social_multiplier_factor,
+            initial_prestige=self.rng.uniform(1, 100, n_groups),
+            initial_budget=self.rng.uniform(1000, 10_000, n_groups), # Initial seed money
+            baseline_quality_q0=baseline_quality_q0,
+            quality_slope_kappa=quality_slope_kappa,
+            quality_noise_q=quality_noise_q,
+            budget_slope_lambda=budget_slope_lambda,
+            prestige_decay=prestige_decay,
+            prestige_social_multiplier=prestige_social_multiplier,
+            quality_to_prestige_beta=beta_p,
+            weights_utility=[researcher_preferences for _ in range(n_groups)],
+            rationality_beta=3.0, # Reasonably rational
+            funding_params=[{'G0': g0, 'gamma': gamma} for _ in range(n_groups)]
         )
 
-        model_reporters = {
-            "Gini_Researchers": lambda m: self._compute_gini(m.all_group_prestiges),
-            "Gini_Journals":  lambda m: self._compute_gini(m.all_journal_reputations)
-        }
-
-        # DataCollector
-        agent_reporters = {
-            "Type": lambda a: a.__class__.__name__,
-            "Prestige": lambda a: getattr(a, "prestige", None),
-            "Reputation": lambda a: getattr(a, "reputation", None),
-            "NPapers": lambda a: getattr(a, "papers_this_step", None),
-            "Profit": lambda a: getattr(a, "revenue_this_step", None),
-            "Ethics": lambda a: getattr(a, "ethics", None),
-            "Cost": lambda a: getattr(a, "cost", None),
-            "OA": lambda a: getattr(a, "is_oa", None),
-        }
-        self.datacollector = mesa.DataCollector(agent_reporters=agent_reporters, model_reporters=model_reporters)
-
-    @property
-    def all_group_prestiges(self):
-        """Helper property to get all current group prestiges."""
-        return np.array([a.prestige for a in self.agents_by_type[ResearcherGroupAgent]])
-
-    @property
-    def all_journal_reputations(self):
-        """Helper property to get all current journal reputations."""
-        return np.array([a.reputation for a in self.agents_by_type[JournalAgent]])
+        # Data Collection
+        self.datacollector = mesa.DataCollector(
+            model_reporters={
+                "MeanPrestige": lambda m: np.mean(
+                    [a.prestige for a in m.agents_by_type[ResearcherGroupAgent]]
+                ),
+                "MeanReputation": lambda m: np.mean(
+                    [a.reputation for a in m.agents_by_type[JournalAgent]]
+                ),
+                "TotalBudget": lambda m: np.sum(
+                    [a.budget for a in m.agents_by_type[ResearcherGroupAgent]]
+                ),
+                "Gini_Researchers": lambda m: self._compute_gini(
+                    [a.prestige for a in m.agents_by_type[ResearcherGroupAgent]]
+                ),
+                "Gini_Journals": lambda m: self._compute_gini(
+                    [a.reputation for a in m.agents_by_type[JournalAgent]]
+                ),
+            },
+            agent_reporters={
+                "Prestige": lambda a: getattr(a, "prestige", None),
+                "Budget": lambda a: getattr(a, "budget", None),
+                "Reputation": lambda a: getattr(a, "reputation", None),
+                "Revenue": lambda a: getattr(a, "revenue", None),
+                "Type": lambda a: a.__class__.__name__,
+                "Category": lambda a: getattr(a, "type_label", None),
+                "NPapers": lambda a: getattr(a, "papers_accepted", None),
+                "ResearchQuality": lambda a: getattr(a, "last_paper_quality", None),
+            },
+        )
 
     @staticmethod
     def _compute_gini(array):
         """Calculates the Gini Coefficient for Researcher Prestige/Journal Reputation"""
+        array = np.array(array)
         if np.sum(array) == 0:
             return 0.0
-
-        sorted_prestiges = np.sort(array)
+        # Ensure positive values for Gini
+        array = np.where(array < 0, 0, array)
+        sorted_array = np.sort(array)
         n = len(array)
         index = np.arange(1, n + 1)
-        return ((2 * np.sum(index * sorted_prestiges)) / (n * np.sum(sorted_prestiges))) - ((n + 1) / n)
+        return ((2 * np.sum(index * sorted_array)) / (n * np.sum(sorted_array))) - ((n + 1) / n)
 
-    def _update_caches(self):
-        # Researchers
-        researcher_agents = self.agents_by_type[ResearcherGroupAgent]
-        group_prestiges = np.array([r.prestige for r in researcher_agents])
-        max_prestige = np.max(group_prestiges)
-
-        # Journals
-        journal_agents = self.agents_by_type[JournalAgent]
-        self.cached_journal_list = journal_agents
-        self.cached_journal_ethics = np.array([j.ethics for j in journal_agents])
-
-        journal_reputations = np.array([j.reputation for j in journal_agents])
-        max_rep = journal_reputations.max()
-
-        # Normalization
-        if max_rep == 0:
-            self.cached_journal_norm_reputations = journal_reputations
-        else:
-            self.cached_journal_norm_reputations = journal_reputations / max_rep
-
-        if max_prestige == 0:
-            self.cached_researcher_norm_prestiges = group_prestiges
-        else:
-            self.cached_researcher_norm_prestiges = group_prestiges / max_prestige
-
-        # Quantiles
-        if group_prestiges.size > 0:
-            self.group_quantile_90 = np.quantile(group_prestiges, 0.9)
-            self.group_quantile_50 = np.quantile(group_prestiges, 0.5)
-        else:
-            self.group_quantile_90 = 0
-            self.group_quantile_50 = 0
-
-        if journal_reputations.size > 0:
-            self.journal_quantile_90 = np.quantile(journal_reputations, 0.9)
-            self.journal_quantile_50 = np.quantile(journal_reputations, 0.5)
-        else:
-            self.journal_quantile_90 = 0
-            self.journal_quantile_50 = 0
+    def handle_reinvestment(self, amount, rate):
+        """
+        Takes a portion of APC and redistributes it to all groups.
+        Ref: Equation (7)
+        """
+        reinvest_amount = amount * rate
+        self.reinvestment_pool += reinvest_amount
 
     def step(self):
-        self._update_caches()
-        self.datacollector.collect(self)
+        # Update globals for normalization
+        researchers = self.agents_by_type[ResearcherGroupAgent]
+        journals = self.agents_by_type[JournalAgent]
 
-        self.agents_by_type[JournalAgent].shuffle_do("step")
+        self.max_prestige = max([r.prestige for r in researchers])
+        self.max_reputation = max([j.reputation for j in journals])
+
+        # Funding Step (Begin of year/round)
+        # Distribute Grants + Reinvestment from previous steps (simplified to immediate)
+        # 1. Distribute Reinvestment from previous step (or calculate dynamically)
+        # In this loop we accumulate reinvestment during agent steps, so we distribute
+        # the pool from the *current* step at the *end*, or distribute *last* step's pool now.
+        # Let's distribute now (assuming pool represents exogenous + reinvestment).
+
+        share_per_group = self.reinvestment_pool / self.n_groups
+        for r in researchers:
+            # Grant (Eq 5)
+            norm_p = r.prestige / self.max_prestige if self.max_prestige > 0 else 0
+            r.receive_funding(norm_p)
+            # Reinvestment (Eq 7)
+            r.budget += share_per_group
+
+        self.reinvestment_pool = 0 # Reset pool
+
+        # 2. Agent Steps (Submission, Review, Updates)
         self.agents_by_type[ResearcherGroupAgent].shuffle_do("step")
+        self.datacollector.collect(self)
+        self.agents_by_type[JournalAgent].shuffle_do("step")
 
 
 if __name__ == "__main__":
-    print("Running ABM...")
-    params = {
-        "n_journals": 10,
-        "n_groups": 100,
-        # "researcher_weight_prestige_max": [0.1, 0.9], # Compare low vs high prestige focus
-        "researcher_ethics_weight_included": False,
-        "researcher_social_multiplier_factor": 0.01,  # Rich-get-richer coefficient
-        "journal_reputation_decay": 0.0001,  # Reputation decay per step
-        "journal_acceptance_modifier_k": 15,  # Acceptance steepness
-        "journal_prestige_to_reputation_contribution_weight": 1.0,  # former "weight_contribution"
-    }
-    max_steps = 1000
-    result = mesa.batch_run(
-        PublishingModel,
-        number_processes=None,
-        iterations=20,
-        data_collection_period=1,
-        parameters=params,
-        max_steps=max_steps
-    )
+    m = PublishingModel()
 
-    df = pd.DataFrame(result)
-    df['Ethics Group'] = np.where(df['Ethics'] < 0.5, 'Low Ethics', 'High Ethics')
-
-    print("Plotting Dynamics...")
-
-    # 1. Dynamics of Papers
-    g1 = sns.relplot(
-        data=df[df["Type"] == "JournalAgent"],
-        x='Step', y='NPapers', hue='Ethics Group',
-        kind='line', estimator=np.sum, errorbar='ci',
-        palette={'High Ethics': 'red', 'Low Ethics': 'blue'},
-        height=4, aspect=1.5
-    ).set(title="Papers Published Over Time")
-    plt.tight_layout()
-    plt.show()
-
-    # 2. Dynamics of Mean Prestige/Reputation
-    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
-
-    # Researchers
-    sns.lineplot(
-        data=df[df["Type"] == "ResearcherGroupAgent"],
-        x='Step', y='Prestige',
-        estimator=np.median,
-        errorbar=('pi', 80),
-        ax=axes[0]
-    )
-    axes[0].set_title("Researcher Prestige Dynamics (median [10-90 percentile])")
-
-    # Journals
-    sns.lineplot(
-        data=df[df["Type"] == "JournalAgent"],
-        x='Step', y='Reputation',
-        estimator=np.median,
-        errorbar=('pi', 80),
-        ax=axes[1]
-    )
-    axes[1].set_title("Journal Reputation Dynamics (median [10-90 percentile])")
-    plt.show()
-
-    steps_to_compare = [1, max_steps]
-    df_dist = df[df['Step'].isin(steps_to_compare)].copy()
-    df_dist['Time'] = df_dist['Step'].replace({1: 'Start', max_steps: 'End'})
-
-    g3 = sns.displot(
-        data=df_dist[df_dist["Type"] == "ResearcherGroupAgent"],
-        x="Prestige", hue="Time",
-        kind="hist", fill=True, common_norm=False, height=4, aspect=1.2,
-    ).set(title="Researcher Prestige Distribution")
-    plt.tight_layout()
-    plt.show()
-
-    g4 = sns.displot(
-        data=df_dist[df_dist["Type"] == "JournalAgent"],
-        x="Reputation", hue="Time",
-        kind="hist", fill=True, common_norm=False, height=4, aspect=1.2
-    ).set(title="Journal Reputation Distribution")
-    plt.tight_layout()
-    plt.show()
-
-    print("Plotting Comparative Gini Dynamics...")
-    df_gini = df.groupby("Step")[["Gini_Researchers", "Gini_Journals"]].median().reset_index()
-
-    df_melted = df_gini.melt(
-        id_vars=["Step"],
-        value_vars=["Gini_Researchers", "Gini_Journals"],
-        var_name="Metric",
-        value_name="Gini Coefficient"
-    )
-
-    plt.figure(figsize=(8, 5))
-    sns.lineplot(
-        data=df_melted,
-        x="Step",
-        y="Gini Coefficient",
-        hue="Metric",
-        palette={"Gini_Researchers": "blue", "Gini_Journals": "red"},
-        linewidth=2.5,
-    )
-
-    plt.title("Inequality Race: Researchers & Journals")
-    plt.ylim(0, 1.0)
-    plt.grid(True, alpha=0.3)
-    plt.ylabel("Inequality (0=Equal, 1=Monopoly)")
-    plt.tight_layout()
-    plt.show()
+    for i in range(19):
+        m.step()
