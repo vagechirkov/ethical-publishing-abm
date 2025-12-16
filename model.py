@@ -2,6 +2,50 @@ import mesa
 import numpy as np
 from scipy.special import expit, softmax
 
+# Default configuration for journals if none is provided
+DEFAULT_JOURNAL_SPECS = [
+    {
+        "type_label": "predatory",
+        "ratio": 0.4,
+        "params": {
+            "selectivity_threshold_theta": -10.0,
+            "screening_noise_tau": 0.5,
+            "bias_weight_b": 0.0,
+            "apc_cost": 20,
+            "reinvestment_rate": 0.0,
+            "ethics_score": 0.1,
+            "initial_reputation": 1,
+        }
+    },
+    {
+        "type_label": "commercial",
+        "ratio": 0.4,
+        "params": {
+            # Tuple indicates distribution: ("uniform", low, high)
+            "selectivity_threshold_theta": ("uniform", 1.0, 3.0),
+            "screening_noise_tau": 0.5,
+            "bias_weight_b": 0.5,
+            "apc_cost": 30,
+            "reinvestment_rate": 0.05,
+            "ethics_score": 0.4,
+            "initial_reputation": 40,
+        }
+    },
+    {
+        "type_label": "society",
+        "ratio": 0.2,
+        "params": {
+            "selectivity_threshold_theta": ("uniform", 1.0, 3.0),
+            "screening_noise_tau": 0.5,
+            "bias_weight_b": 0.1,
+            "apc_cost": 5,
+            "reinvestment_rate": 0.8,
+            "ethics_score": 0.9,
+            "initial_reputation": 40,
+        }
+    }
+]
+
 class JournalAgent(mesa.Agent):
     def __init__(
             self,
@@ -238,8 +282,6 @@ class ResearcherGroupAgent(mesa.Agent):
                 self.update_prestige(q_it, norm_rep)
 
         # Prestige decay happens regardless of publication (implicit in eq 13 if second term is 0)
-        # However, to be strict with Eq 13, it's an update rule *upon publication*.
-        # if no publication, prestige just decays
         if not self.accepted_this_step:
             self.prestige *= (1 - self.decay)
 
@@ -263,9 +305,7 @@ class PublishingModel(mesa.Model):
             gamma: float = 50, # Funding Matthew effect
 
             # Journal Params (Distributions)
-            journal_reputation_decay: float = 0.05,
-            alpha_r: float = 0.5,
-            journal_category_ratio: tuple = (0.4, 0.4, 0.2),  # Predatory, Commercial, Society
+            journal_setup: list = None,
 
             # Simulation
             seed: float = None
@@ -276,71 +316,46 @@ class PublishingModel(mesa.Model):
         self.n_groups = n_groups
         self.n_journals = n_journals
         self.reinvestment_pool = 0 # Temporary storage for step
+        self.researcher_preferences = researcher_preferences # Store for data collector
 
         self.max_prestige = 1.0
         self.max_reputation = 1.0
 
+        # Use default specs if none provided
+        if journal_setup is None:
+            journal_setup = DEFAULT_JOURNAL_SPECS
+
         # Create Journals with heterogeneous types
-        # Predatory (High Cost, Zero ethics, No screening),
-        # Commercial (High Cost, Low ethics, Good screening),
-        # Ethical/Society (Low Cost, High ethics, Good screening)
-        for j_category, ratio in zip(['predatory', 'commercial', 'society'], journal_category_ratio):
-            n_journals_in_category = int(ratio * n_journals)
-            labels = [j_category for _ in range(n_journals_in_category)]
-            if j_category == 'predatory':
-                JournalAgent.create_agents(
-                    self,
-                    n_journals_in_category,
-                    selectivity_threshold_theta=-10.0,  # Accepts almost anything
-                    screening_noise_tau=0.5,
-                    bias_weight_b=0,
-                    apc_cost=20,
-                    reinvestment_rate=0.0,  # No reinvestment
-                    ethics_score=0.1,
-                    initial_reputation=1,
-                    reputation_decay=journal_reputation_decay,
-                    quality_to_reputation_alpha=alpha_r,
-                    type_label=labels,
-                )
-            elif j_category == 'commercial':
-                JournalAgent.create_agents(
-                    self,
-                    n_journals_in_category,
-                    selectivity_threshold_theta=self.rng.uniform(1, 3, n_journals_in_category),
-                    screening_noise_tau=0.5,
-                    bias_weight_b=0.5,  # Likes famous authors
-                    apc_cost=30,
-                    reinvestment_rate=0.05,  # Minimal reinvestment
-                    ethics_score=0.4,
-                    initial_reputation=40,
-                    reputation_decay=journal_reputation_decay,
-                    quality_to_reputation_alpha=alpha_r,
-                    type_label=labels,
-                )
-            elif j_category == "society":
-                JournalAgent.create_agents(
-                    self,
-                    n_journals_in_category,
-                    selectivity_threshold_theta=self.rng.uniform(1, 3, n_journals_in_category),
-                    screening_noise_tau=0.5,
-                    bias_weight_b=0.1,  # Fairer
-                    apc_cost=5,
-                    reinvestment_rate=0.8,  # High reinvestment
-                    ethics_score=0.9,
-                    initial_reputation=40,
-                    reputation_decay=journal_reputation_decay,
-                    quality_to_reputation_alpha=alpha_r,
-                    type_label=j_category,
-                )
-            else:
-                raise NotImplementedError(f"{j_category} not implemented")
+        # Initialize Journals based on journal_setup
+        for config in journal_setup:
+            count = int(config["ratio"] * n_journals)
+            params = config["params"].copy()
+
+            # Handle Distributions (e.g. ("uniform", 1, 3))
+            parsed_params = {}
+            for key, val in params.items():
+                if isinstance(val, tuple) and val[0] == "uniform":
+                    # Generate array of values
+                    low, high = val[1], val[2]
+                    parsed_params[key] = self.rng.uniform(low, high, count)
+                else:
+                    parsed_params[key] = val
+
+            # Create agents
+            # Note: create_agents handles lists for arguments automatically
+            JournalAgent.create_agents(
+                self,
+                count,
+                type_label=[config["type_label"]] * count,
+                **parsed_params
+            )
 
         # Create Researchers
         ResearcherGroupAgent.create_agents(
             self,
             n_groups,
             initial_prestige=self.rng.uniform(1, 100, n_groups),
-            initial_budget=self.rng.uniform(1000, 10_000, n_groups), # Initial seed money
+            initial_budget=self.rng.uniform(1000, 10_000, n_groups),
             baseline_quality_q0=baseline_quality_q0,
             quality_slope_kappa=quality_slope_kappa,
             quality_noise_q=quality_noise_q,
@@ -349,48 +364,45 @@ class PublishingModel(mesa.Model):
             prestige_social_multiplier=prestige_social_multiplier,
             quality_to_prestige_beta=beta_p,
             weights_utility=[researcher_preferences for _ in range(n_groups)],
-            rationality_beta=3.0, # Reasonably rational
+            rationality_beta=3.0,
             funding_params=[{'G0': g0, 'gamma': gamma} for _ in range(n_groups)]
         )
 
         # Data Collection
         self.datacollector = mesa.DataCollector(
             model_reporters={
-                "MeanPrestige": lambda m: np.mean(
-                    [a.prestige for a in m.agents_by_type[ResearcherGroupAgent]]
-                ),
-                "MeanReputation": lambda m: np.mean(
-                    [a.reputation for a in m.agents_by_type[JournalAgent]]
-                ),
-                "TotalBudget": lambda m: np.sum(
-                    [a.budget for a in m.agents_by_type[ResearcherGroupAgent]]
-                ),
-                "Gini_Researchers": lambda m: self._compute_gini(
-                    [a.prestige for a in m.agents_by_type[ResearcherGroupAgent]]
-                ),
-                "Gini_Journals": lambda m: self._compute_gini(
-                    [a.reputation for a in m.agents_by_type[JournalAgent]]
-                ),
+                "SocietyShare": self.compute_society_share,
+                "AvgQuality": self.compute_avg_quality,
+                "MeanReputation": lambda m: np.mean([a.reputation for a in m.agents_by_type[JournalAgent]]),
             },
             agent_reporters={
-                "Prestige": lambda a: getattr(a, "prestige", None),
-                "Budget": lambda a: getattr(a, "budget", None),
-                "Reputation": lambda a: getattr(a, "reputation", None),
-                "Revenue": lambda a: getattr(a, "revenue", None),
-                "Type": lambda a: a.__class__.__name__,
                 "Category": lambda a: getattr(a, "type_label", None),
                 "NPapers": lambda a: getattr(a, "papers_accepted", None),
-                "ResearchQuality": lambda a: getattr(a, "last_paper_quality", None),
             },
         )
 
+    def compute_society_share(self):
+        """Calculates the percentage of total papers accepted by society journals this step."""
+        journals = self.agents_by_type[JournalAgent]
+        total_papers = sum(j.papers_accepted for j in journals)
+        if total_papers == 0:
+            return 0.0
+
+        society_papers = sum(j.papers_accepted for j in journals if j.type_label == "society")
+        return society_papers / total_papers
+
+    def compute_avg_quality(self):
+        """Calculates mean quality of produced manuscripts."""
+        researchers = self.agents_by_type[ResearcherGroupAgent]
+        qualities = [r.last_paper_quality for r in researchers]
+        return np.mean(qualities) if qualities else 0.0
+
     @staticmethod
     def _compute_gini(array):
-        """Calculates the Gini Coefficient for Researcher Prestige/Journal Reputation"""
+        """Calculates the Gini Coefficient"""
         array = np.array(array)
         if np.sum(array) == 0:
             return 0.0
-        # Ensure positive values for Gini
         array = np.where(array < 0, 0, array)
         sorted_array = np.sort(array)
         n = len(array)
@@ -398,10 +410,6 @@ class PublishingModel(mesa.Model):
         return ((2 * np.sum(index * sorted_array)) / (n * np.sum(sorted_array))) - ((n + 1) / n)
 
     def handle_reinvestment(self, amount, rate):
-        """
-        Takes a portion of APC and redistributes it to all groups.
-        Ref: Equation (7)
-        """
         reinvest_amount = amount * rate
         self.reinvestment_pool += reinvest_amount
 
@@ -422,22 +430,12 @@ class PublishingModel(mesa.Model):
 
         share_per_group = self.reinvestment_pool / self.n_groups
         for r in researchers:
-            # Grant (Eq 5)
             norm_p = r.prestige / self.max_prestige if self.max_prestige > 0 else 0
             r.receive_funding(norm_p)
-            # Reinvestment (Eq 7)
             r.budget += share_per_group
 
-        self.reinvestment_pool = 0 # Reset pool
+        self.reinvestment_pool = 0
 
-        # 2. Agent Steps (Submission, Review, Updates)
         self.agents_by_type[ResearcherGroupAgent].shuffle_do("step")
         self.datacollector.collect(self)
         self.agents_by_type[JournalAgent].shuffle_do("step")
-
-
-if __name__ == "__main__":
-    m = PublishingModel()
-
-    for i in range(19):
-        m.step()
