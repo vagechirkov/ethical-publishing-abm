@@ -57,8 +57,8 @@ class JournalAgent(mesa.Agent):
             reinvestment_rate,           # rho_j
             ethics_score,                # E_j
             initial_reputation,          # R_j(0)
-            reputation_decay,            # delta_R
-            quality_to_reputation_alpha, # alpha_R
+            reputation_decay=0.01,       # delta_R # Added default for safety
+            quality_to_reputation_alpha=0.1,  # alpha_R# Added default for safety
             type_label=""
     ):
         super().__init__(model)
@@ -96,9 +96,7 @@ class JournalAgent(mesa.Agent):
 
         # Screening Probability: sigmoid((q_hat - theta) / tau)
         prob_accept = expit((perceived_quality - self.theta) / self.tau)
-
-        # Bernoulli trial
-        return  self.rng.random() < prob_accept
+        return self.rng.random() < prob_accept
 
     def update_reputation(self, paper_quality):
         """
@@ -167,17 +165,20 @@ class ResearcherGroupAgent(mesa.Agent):
 
     def produce_manuscript(self):
         """
-        Generates latent quality q_{i,t}.
-        Ref: Equation (1) and (10)
-        mu = q0 + kappa*log(1+P) + lambda*log(1+B)
+        Generates latent quality.
+        Change: If economics is disabled, the budget term is ignored.
         """
-        mu = (self.q0 +
-              self.kappa * np.log(1 + self.prestige) +
-              self.lamb * np.log(1 + max(0, self.budget)))
+        # 1. Prestige Effect
+        prestige_effect = self.kappa * np.log(1 + self.prestige)
 
-        # Draw from Normal distribution
-        q_it = self.rng.normal(mu, self.quality_noise)
-        return q_it
+        # 2. Budget Effect (Conditional)
+        if self.model.enable_economics:
+            budget_effect = self.lamb * np.log(1 + max(0, self.budget))
+        else:
+            budget_effect = 0
+
+        mu = self.q0 + prestige_effect + budget_effect
+        return self.rng.normal(mu, self.quality_noise)
 
     def choose_target_journal(self):
         """
@@ -186,41 +187,43 @@ class ResearcherGroupAgent(mesa.Agent):
         """
         journals = self.model.agents_by_type[JournalAgent]
 
-        # Gather metrics for calculation
+        # Pre-calculation
         reputations = np.array([j.reputation for j in journals])
         ethics = np.array([j.ethics for j in journals])
         costs = np.array([j.apc for j in journals])
 
-        # Normalize metrics for the utility function (as per text descriptions)
+        # Normalize
         max_rep = np.max(reputations) if np.max(reputations) > 0 else 1.0
         norm_reputations = reputations / max_rep
 
         max_cost = np.max(costs) if np.max(costs) > 0 else 1.0
         norm_costs = costs / max_cost
 
-        # Calculate Utility: U = w_R * R + w_E * E - w_C * C
-        utilities = (
-                self.w_R * norm_reputations +
-                self.w_E * ethics -
-                self.w_C * norm_costs
-        )
-
-        # Mask unaffordable journals (Prob = 0)
-        # "Affordability is enforced by setting Pr=0 whenever B < C"
-        affordable_mask = (costs <= self.budget)
+        if self.model.enable_economics:
+            # Full Utility: Reputation + Ethics - Cost
+            utilities = (
+                    self.w_R * norm_reputations +
+                    self.w_E * ethics -
+                    self.w_C * norm_costs
+            )
+            # Affordability check
+            affordable_mask = (costs <= self.budget)
+        else:
+            # Pure Science Utility: Reputation + Ethics (Cost is ignored)
+            utilities = (
+                    self.w_R * norm_reputations +
+                    self.w_E * ethics
+            )
+            # All journals are "affordable"
+            affordable_mask = np.ones(len(journals), dtype=bool)
 
         if not np.any(affordable_mask):
-            return None # Cannot afford any journal
+            return None
 
-        # Apply Softmax to affordable utilities
-        # We set unaffordable utilities to -infinity so exp(U) is 0
         masked_utilities = np.where(affordable_mask, utilities, -np.inf)
-
         probs = softmax(self.rationality_beta * masked_utilities)
 
-        # Choose journal based on probs
-        chosen_journal = self.rng.choice(journals, p=probs)
-        return chosen_journal
+        return self.rng.choice(journals, p=probs)
 
     def update_prestige(self, paper_quality, journal_norm_reputation):
         """
@@ -264,24 +267,22 @@ class ResearcherGroupAgent(mesa.Agent):
             if accepted:
                 self.accepted_this_step = True
 
-                # Transaction
-                self.budget -= target_journal.apc
-                target_journal.revenue += target_journal.apc
-                target_journal.papers_accepted += 1
+                if self.model.enable_economics:
+                    self.budget -= target_journal.apc
+                    target_journal.revenue += target_journal.apc
+                    # Reinvestment logic
+                    self.model.handle_reinvestment(target_journal.apc, target_journal.reinvestment_rate)
 
-                # Reinvestment
-                self.model.handle_reinvestment(target_journal.apc, target_journal.reinvestment_rate)
+                # Metrics (count papers regardless of money)
+                target_journal.papers_accepted += 1
 
                 # Updates
                 target_journal.update_reputation(q_it)
 
-                # Update Researcher Prestige
-                # Need current normalized journal reputation
                 max_r = self.model.max_reputation if self.model.max_reputation > 0 else 1.0
                 norm_rep = target_journal.reputation / max_r
                 self.update_prestige(q_it, norm_rep)
 
-        # Prestige decay happens regardless of publication (implicit in eq 13 if second term is 0)
         if not self.accepted_this_step:
             self.prestige *= (1 - self.decay)
 
@@ -291,63 +292,57 @@ class PublishingModel(mesa.Model):
             self,
             n_groups: int = 50,
             n_journals: int = 10,
+            # Feature Toggle
+            enable_economics: bool = True,
 
             # Researcher Params
             baseline_quality_q0: float = 1.0,
             quality_noise_q: float = 0.5,
             quality_slope_kappa: float = 0.5,
-            budget_slope_lambda: float = 0.2, # budget_slope
+            budget_slope_lambda: float = 0.2,
             prestige_decay: float = 0.05,
             prestige_social_multiplier: float = 0.0,
             beta_p: float = 0.5,
-            researcher_preferences: tuple = (1.0, 0.0, 0.0),  # weights: reputation, ethics, cost
+            researcher_preferences: tuple = (1.0, 0.0, 0.0),
             g0: float = 100,
-            gamma: float = 50, # Funding Matthew effect
+            gamma: float = 50,
 
-            # Journal Params (Distributions)
+            # Journal Params
             journal_setup: list = None,
-
-            # Simulation
             seed: float = None
     ) -> None:
         super().__init__(seed=seed)
-        assert n_journals % 10 == 0, "N Journals must be divisible by 10"
+
+        self.enable_economics = enable_economics
 
         self.n_groups = n_groups
         self.n_journals = n_journals
-        self.reinvestment_pool = 0 # Temporary storage for step
-        self.researcher_preferences = researcher_preferences # Store for data collector
+        self.reinvestment_pool = 0
+        self.researcher_preferences = researcher_preferences
 
         self.max_prestige = 1.0
         self.max_reputation = 1.0
 
-        # Use default specs if none provided
         if journal_setup is None:
             journal_setup = DEFAULT_JOURNAL_SPECS
 
-        # Create Journals with heterogeneous types
-        # Initialize Journals based on journal_setup
+        # Create Journals
         for config in journal_setup:
             count = int(config["ratio"] * n_journals)
+            if count == 0 and n_journals > 0: continue # Safety check
+
             params = config["params"].copy()
 
-            # Handle Distributions (e.g. ("uniform", 1, 3))
+            # Handle Distributions
             parsed_params = {}
             for key, val in params.items():
                 if isinstance(val, tuple) and val[0] == "uniform":
-                    # Generate array of values
-                    low, high = val[1], val[2]
-                    parsed_params[key] = self.rng.uniform(low, high, count)
+                    parsed_params[key] = self.rng.uniform(val[1], val[2], count)
                 else:
                     parsed_params[key] = val
 
-            # Create agents
-            # Note: create_agents handles lists for arguments automatically
             JournalAgent.create_agents(
-                self,
-                count,
-                type_label=[config["type_label"]] * count,
-                **parsed_params
+                self, count, type_label=[config["type_label"]] * count, **parsed_params
             )
 
         # Create Researchers
@@ -371,25 +366,43 @@ class PublishingModel(mesa.Model):
         # Data Collection
         self.datacollector = mesa.DataCollector(
             model_reporters={
+                "MeanPrestige": lambda m: np.mean(
+                    [a.prestige for a in m.agents_by_type[ResearcherGroupAgent]]
+                ),
+                "MeanReputation": lambda m: np.mean(
+                    [a.reputation for a in m.agents_by_type[JournalAgent]]
+                ),
+                "TotalBudget": lambda m: np.sum(
+                    [a.budget for a in m.agents_by_type[ResearcherGroupAgent]]
+                ),
+                "Gini_Researchers": lambda m: self._compute_gini(
+                    [a.prestige for a in m.agents_by_type[ResearcherGroupAgent]]
+                ),
+                "Gini_Journals": lambda m: self._compute_gini(
+                    [a.reputation for a in m.agents_by_type[JournalAgent]]
+                ),
                 "SocietyShare": self.compute_society_share,
                 "AvgQuality": self.compute_avg_quality,
-                "MeanReputation": lambda m: np.mean([a.reputation for a in m.agents_by_type[JournalAgent]]),
             },
             agent_reporters={
+                "Prestige": lambda a: getattr(a, "prestige", None),
+                "Budget": lambda a: getattr(a, "budget", None),
+                "Reputation": lambda a: getattr(a, "reputation", None),
+                "Revenue": lambda a: getattr(a, "revenue", None),
+                "Type": lambda a: a.__class__.__name__,
                 "Category": lambda a: getattr(a, "type_label", None),
                 "NPapers": lambda a: getattr(a, "papers_accepted", None),
+                "ResearchQuality": lambda a: getattr(a, "last_paper_quality", None),
             },
         )
 
     def compute_society_share(self):
         """Calculates the percentage of total papers accepted by society journals this step."""
         journals = self.agents_by_type[JournalAgent]
-        total_papers = sum(j.papers_accepted for j in journals)
-        if total_papers == 0:
-            return 0.0
-
-        society_papers = sum(j.papers_accepted for j in journals if j.type_label == "society")
-        return society_papers / total_papers
+        total = sum(j.papers_accepted for j in journals)
+        if total == 0: return 0.0
+        soc = sum(j.papers_accepted for j in journals if j.type_label == "society")
+        return soc / total
 
     def compute_avg_quality(self):
         """Calculates mean quality of produced manuscripts."""
@@ -410,31 +423,28 @@ class PublishingModel(mesa.Model):
         return ((2 * np.sum(index * sorted_array)) / (n * np.sum(sorted_array))) - ((n + 1) / n)
 
     def handle_reinvestment(self, amount, rate):
-        reinvest_amount = amount * rate
-        self.reinvestment_pool += reinvest_amount
+        """
+        Takes a portion of APC and redistributes it to all groups.
+        Ref: Equation (7)
+        """
+        if self.enable_economics:
+            self.reinvestment_pool += amount * rate
 
     def step(self):
-        # Update globals for normalization
+        # Update Globals
         researchers = self.agents_by_type[ResearcherGroupAgent]
         journals = self.agents_by_type[JournalAgent]
 
         self.max_prestige = max([r.prestige for r in researchers])
         self.max_reputation = max([j.reputation for j in journals])
 
-        # Funding Step (Begin of year/round)
-        # Distribute Grants + Reinvestment from previous steps (simplified to immediate)
-        # 1. Distribute Reinvestment from previous step (or calculate dynamically)
-        # In this loop we accumulate reinvestment during agent steps, so we distribute
-        # the pool from the *current* step at the *end*, or distribute *last* step's pool now.
-        # Let's distribute now (assuming pool represents exogenous + reinvestment).
-
-        share_per_group = self.reinvestment_pool / self.n_groups
-        for r in researchers:
-            norm_p = r.prestige / self.max_prestige if self.max_prestige > 0 else 0
-            r.receive_funding(norm_p)
-            r.budget += share_per_group
-
-        self.reinvestment_pool = 0
+        if self.enable_economics:
+            share_per_group = self.reinvestment_pool / self.n_groups
+            for r in researchers:
+                norm_p = r.prestige / self.max_prestige if self.max_prestige > 0 else 0
+                r.receive_funding(norm_p)
+                r.budget += share_per_group
+            self.reinvestment_pool = 0
 
         self.agents_by_type[ResearcherGroupAgent].shuffle_do("step")
         self.datacollector.collect(self)
