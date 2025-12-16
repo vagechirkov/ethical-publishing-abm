@@ -25,7 +25,7 @@ def no_economics_exp(prestige_decay, prestige_social_multiplier, journal_specs):
     result = mesa.batch_run(
         PublishingModel,
         number_processes=None,
-        iterations=1,
+        iterations=100,
         data_collection_period=1,
         parameters=params,
         max_steps=max_steps
