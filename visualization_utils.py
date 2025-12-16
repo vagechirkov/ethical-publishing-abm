@@ -51,7 +51,7 @@ def plot_category_dynamics(df):
     g1.fig.suptitle("Papers Published Over Time")
 
 
-def plot_start_end_distribution(df, max_steps=200):
+def plot_start_end_distribution_prestige(df, max_steps=200):
     steps_to_compare = [1, max_steps]
     df_dist = df[df['Step'].isin(steps_to_compare)].copy()
     df_dist['Time'] = df_dist['Step'].replace({1: 'Start', max_steps: 'End'})
@@ -62,7 +62,12 @@ def plot_start_end_distribution(df, max_steps=200):
         kind="hist", fill=True, common_norm=False, height=4, aspect=1.2,
     )
     g3.fig.suptitle("Researcher Prestige Distribution")
-    plt.show()
+
+
+def plot_start_end_distribution_reputation(df, max_steps=200):
+    steps_to_compare = [1, max_steps]
+    df_dist = df[df['Step'].isin(steps_to_compare)].copy()
+    df_dist['Time'] = df_dist['Step'].replace({1: 'Start', max_steps: 'End'})
 
     g4 = sns.displot(
         data=df_dist[df_dist["Type"] == "JournalAgent"],

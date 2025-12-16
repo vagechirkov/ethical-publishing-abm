@@ -11,10 +11,12 @@ DEFAULT_JOURNAL_SPECS = [
             "selectivity_threshold_theta": -10.0,
             "screening_noise_tau": 0.5,
             "bias_weight_b": 0.0,
+            "initial_reputation": 1,
+
             "apc_cost": 20,
             "reinvestment_rate": 0.0,
             "ethics_score": 0.1,
-            "initial_reputation": 1,
+
         }
     },
     {
@@ -25,10 +27,11 @@ DEFAULT_JOURNAL_SPECS = [
             "selectivity_threshold_theta": ("uniform", 1.0, 3.0),
             "screening_noise_tau": 0.5,
             "bias_weight_b": 0.5,
+            "initial_reputation": 40,
+
             "apc_cost": 30,
             "reinvestment_rate": 0.05,
             "ethics_score": 0.4,
-            "initial_reputation": 40,
         }
     },
     {
@@ -38,10 +41,11 @@ DEFAULT_JOURNAL_SPECS = [
             "selectivity_threshold_theta": ("uniform", 1.0, 3.0),
             "screening_noise_tau": 0.5,
             "bias_weight_b": 0.1,
+            "initial_reputation": 40,
+
             "apc_cost": 5,
             "reinvestment_rate": 0.8,
             "ethics_score": 0.9,
-            "initial_reputation": 40,
         }
     }
 ]
@@ -252,36 +256,40 @@ class ResearcherGroupAgent(mesa.Agent):
         self.last_paper_quality = q_it
         self.accepted_this_step = False
 
-        # 2. Choose Target
-        target_journal = self.choose_target_journal()
+        # 2. Try to publish up to 5 times
+        for _ in range(5):
+            target_journal = self.choose_target_journal()
 
-        # 3. Submit (if affordable target found)
-        if target_journal:
-            # We calculate normalized prestige for the journal's assessment
-            max_p = self.model.max_prestige if self.model.max_prestige > 0 else 1.0
-            norm_prestige = self.prestige / max_p
+            # 3. Submit (if affordable target found)
+            if target_journal:
+                # We calculate normalized prestige for the journal's assessment
+                max_p = self.model.max_prestige if self.model.max_prestige > 0 else 1.0
+                norm_prestige = self.prestige / max_p
 
-            # 4. Assessment
-            accepted = target_journal.evaluate_submission(q_it, norm_prestige)
+                # 4. Assessment
+                accepted = target_journal.evaluate_submission(q_it, norm_prestige)
 
-            if accepted:
-                self.accepted_this_step = True
+                if accepted:
+                    self.accepted_this_step = True
 
-                if self.model.enable_economics:
-                    self.budget -= target_journal.apc
-                    target_journal.revenue += target_journal.apc
-                    # Reinvestment logic
-                    self.model.handle_reinvestment(target_journal.apc, target_journal.reinvestment_rate)
+                    if self.model.enable_economics:
+                        self.budget -= target_journal.apc
+                        target_journal.revenue += target_journal.apc
+                        # Reinvestment logic
+                        self.model.handle_reinvestment(target_journal.apc, target_journal.reinvestment_rate)
 
-                # Metrics (count papers regardless of money)
-                target_journal.papers_accepted += 1
+                    # Metrics (count papers regardless of money)
+                    target_journal.papers_accepted += 1
 
-                # Updates
-                target_journal.update_reputation(q_it)
+                    # Updates
+                    target_journal.update_reputation(q_it)
 
-                max_r = self.model.max_reputation if self.model.max_reputation > 0 else 1.0
-                norm_rep = target_journal.reputation / max_r
-                self.update_prestige(q_it, norm_rep)
+                    max_r = self.model.max_reputation if self.model.max_reputation > 0 else 1.0
+                    norm_rep = target_journal.reputation / max_r
+                    self.update_prestige(q_it, norm_rep)
+
+                    # Stop trying if accepted
+                    break
 
         if not self.accepted_this_step:
             self.prestige *= (1 - self.decay)

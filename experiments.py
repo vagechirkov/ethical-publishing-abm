@@ -3,26 +3,29 @@ from pathlib import Path
 import pandas as pd
 import mesa
 import matplotlib.pylab as plt
+import yaml
 
-from model import PublishingModel
+from model import PublishingModel, DEFAULT_JOURNAL_SPECS
 
 from visualization_utils import *
 
-def no_economics_exp(prestige_decay, prestige_social_multiplier):
+def no_economics_exp(prestige_decay, prestige_social_multiplier, journal_specs):
     params = {
         "n_groups": 1000,
         "n_journals": 100,
         "enable_economics": False,
-        "prestige_decay": prestige_decay, # 0.001,
-        "beta_p": 0.5,
+        "prestige_decay": prestige_decay,
         "prestige_social_multiplier": prestige_social_multiplier,
+        "journal_setup": [journal_specs],
+        "researcher_preferences": [(1.0, 0.0, 0.0)]
     }
-    max_steps = 1000
+
+    max_steps = 400
 
     result = mesa.batch_run(
         PublishingModel,
         number_processes=None,
-        iterations=200,
+        iterations=1,
         data_collection_period=1,
         parameters=params,
         max_steps=max_steps
@@ -30,8 +33,15 @@ def no_economics_exp(prestige_decay, prestige_social_multiplier):
 
     df = pd.DataFrame(result)
 
-    dir_name = Path(f'experiments/{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}')
+    now = datetime.now()
+    dir_name = Path(f'experiments/{now.strftime("%Y-%m-%d %H-%M-%S")}')
     Path.mkdir(dir_name, exist_ok=True, parents=True)
+
+    # save params as .yaml file
+    yaml_path = dir_name / 'parameters.yaml'
+    with open(yaml_path, 'w') as f:
+        # Dump the full params. ensure journal_specs is serializable (dicts/lists)
+        yaml.dump(params, f, default_flow_style=False)
 
     # Prestige & reputation
     plot_dynamics(df)
@@ -44,17 +54,53 @@ def no_economics_exp(prestige_decay, prestige_social_multiplier):
     plt.close()
 
     # Distributions Start vs End
-    plot_start_end_distribution(df, max_steps=max_steps)
+    plot_start_end_distribution_reputation(df, max_steps=max_steps)
     plt.savefig(dir_name / 'fig_3.png', dpi=300)
+    plt.close()
+
+    # Distributions Start vs End
+    plot_start_end_distribution_prestige(df, max_steps=max_steps)
+    plt.savefig(dir_name / 'fig_4.png', dpi=300)
     plt.close()
 
     # Gini Coefficients
     plot_gini(df)
-    plt.savefig(dir_name / 'fig_4.png', dpi=300)
+    plt.savefig(dir_name / 'fig_5.png', dpi=300)
     plt.close()
 
 
 if __name__ == "__main__":
-    for prest_decay in [0, 0.001, 0.01, 0.1]:
-        for prest_social_multiplier in [0, 0.01, 0.1]:
-            no_economics_exp(prest_decay, prest_social_multiplier)
+    # order: predatory, commercial, society
+    original_specs = DEFAULT_JOURNAL_SPECS.copy()
+
+    # scenario 1
+    scenario_1 = original_specs.copy()
+    selectivity_threshold_thetas = [-10, 3.0, 1.0]
+    for i, j in enumerate(original_specs):
+        j["params"]["selectivity_threshold_theta"] = selectivity_threshold_thetas[i]
+        j["params"]["screening_noise_tau"] = 0.5
+        j["params"]["initial_reputation"] = 1.0
+        j["params"]["bias_weight_b"] = 0
+
+    # scenario 2
+    scenario_2 = original_specs.copy()
+    bias_weight_bs = [0, 0.5, 0.1]
+    for i, j in enumerate(original_specs):
+        j["params"]["selectivity_threshold_theta"] = 0.5
+        j["params"]["screening_noise_tau"] = 0.5
+        j["params"]["initial_reputation"] = 1.0
+        j["params"]["bias_weight_b"] = bias_weight_bs[i]
+
+    scenario_3 = original_specs.copy()
+    initial_reputations = [1, 100, 20]
+    for i, j in enumerate(original_specs):
+        j["params"]["selectivity_threshold_theta"] = 0.5
+        j["params"]["screening_noise_tau"] = 0.5
+        j["params"]["initial_reputation"] = initial_reputations[i]
+        j["params"]["bias_weight_b"] = 0
+
+
+    for scenario in [original_specs, scenario_1, scenario_2, scenario_3]:
+        for prest_decay in [0, 0.001, 0.01, 0.1]:
+            for prest_social_multiplier in [0, 0.01, 0.1]:
+                no_economics_exp(prest_decay, prest_social_multiplier, scenario)
