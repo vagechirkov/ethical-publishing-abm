@@ -4,6 +4,7 @@ import pandas as pd
 import mesa
 import matplotlib.pylab as plt
 import yaml
+import copy
 
 from model import PublishingModel, DEFAULT_JOURNAL_SPECS
 
@@ -22,6 +23,16 @@ def no_economics_exp(prestige_decay, prestige_social_multiplier, journal_specs):
 
     max_steps = 400
 
+    now = datetime.now()
+    dir_name = Path(f'experiments/{now.strftime("%Y-%m-%d %H-%M-%S")}')
+    Path.mkdir(dir_name, exist_ok=True, parents=True)
+
+    # save params as .yaml file
+    yaml_path = dir_name / 'parameters.yaml'
+    with open(yaml_path, 'w') as f:
+        # Dump the full params. ensure journal_specs is serializable (dicts/lists)
+        yaml.dump(params, f, default_flow_style=False)
+
     result = mesa.batch_run(
         PublishingModel,
         number_processes=None,
@@ -32,16 +43,6 @@ def no_economics_exp(prestige_decay, prestige_social_multiplier, journal_specs):
     )
 
     df = pd.DataFrame(result)
-
-    now = datetime.now()
-    dir_name = Path(f'experiments/{now.strftime("%Y-%m-%d %H-%M-%S")}')
-    Path.mkdir(dir_name, exist_ok=True, parents=True)
-
-    # save params as .yaml file
-    yaml_path = dir_name / 'parameters.yaml'
-    with open(yaml_path, 'w') as f:
-        # Dump the full params. ensure journal_specs is serializable (dicts/lists)
-        yaml.dump(params, f, default_flow_style=False)
 
     # Prestige & reputation
     plot_dynamics(df)
@@ -71,10 +72,10 @@ def no_economics_exp(prestige_decay, prestige_social_multiplier, journal_specs):
 
 if __name__ == "__main__":
     # order: predatory, commercial, society
-    original_specs = DEFAULT_JOURNAL_SPECS.copy()
+    original_specs = copy.deepcopy(DEFAULT_JOURNAL_SPECS)
 
     # scenario 1
-    scenario_1 = original_specs.copy()
+    scenario_1 = copy.deepcopy(original_specs)
     selectivity_threshold_thetas = [-10, 3.0, 1.0]
     for i, j in enumerate(original_specs):
         j["params"]["selectivity_threshold_theta"] = selectivity_threshold_thetas[i]
@@ -83,7 +84,7 @@ if __name__ == "__main__":
         j["params"]["bias_weight_b"] = 0
 
     # scenario 2
-    scenario_2 = original_specs.copy()
+    scenario_2 = copy.deepcopy(original_specs)
     bias_weight_bs = [0, 0.5, 0.1]
     for i, j in enumerate(original_specs):
         j["params"]["selectivity_threshold_theta"] = 0.5
@@ -91,7 +92,7 @@ if __name__ == "__main__":
         j["params"]["initial_reputation"] = 1.0
         j["params"]["bias_weight_b"] = bias_weight_bs[i]
 
-    scenario_3 = original_specs.copy()
+    scenario_3 = copy.deepcopy(original_specs)
     initial_reputations = [1, 100, 20]
     for i, j in enumerate(original_specs):
         j["params"]["selectivity_threshold_theta"] = 0.5
