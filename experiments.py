@@ -10,16 +10,19 @@ from model import PublishingModel, DEFAULT_JOURNAL_SPECS
 
 from visualization_utils import *
 
-def no_economics_exp(prestige_decay, reputation_decay, journal_specs, folder):
+def no_economics_exp(gamma, beta_p, journal_specs, folder):
     params = {
         "n_groups": 1000,
         "n_journals": 100,
-        "enable_economics": False,
-        "prestige_decay": prestige_decay,
+        "enable_economics": True,
+        "prestige_decay": 0.001,
         "prestige_social_multiplier": 0,
-        "journal_reputation_decay": reputation_decay,
+        "journal_reputation_decay": 0.01,
         "journal_setup": [journal_specs],
-        "researcher_preferences": [(1.0, 0.0, 0.0)]
+        "researcher_preferences": [(1.0, 0.0, 0.0)],
+        "g0": 1000,
+        "gamma": gamma,
+        "beta_p": beta_p,
     }
 
     max_steps = 400
@@ -86,7 +89,7 @@ if __name__ == "__main__":
 
     # scenario 2
     scenario_2 = copy.deepcopy(original_specs)
-    bias_weight_bs = [0, 0.5, 0.1]
+    bias_weight_bs = [0, 1, 10]
     for i, j in enumerate(scenario_2):
         j["params"]["selectivity_threshold_theta"] = 0.5
         j["params"]["screening_noise_tau"] = 0.5
@@ -101,8 +104,8 @@ if __name__ == "__main__":
         j["params"]["initial_reputation"] = initial_reputations[i]
         j["params"]["bias_weight_b"] = 0
 
-    for i, scenario in enumerate([scenario_1, scenario_3, original_specs, scenario_2]):
-        for prest_decay in [0, 0.01, 0.1]:
-            for rep_decay in [0, 0.01, 0.1]:
-                subfolder = f'scenario_{i}_prestige_decay_{prest_decay}_rep_decay_{rep_decay}'
-                no_economics_exp(prest_decay, rep_decay, scenario, subfolder)
+    for i, scenario in enumerate([scenario_1, scenario_2, scenario_3, original_specs]):
+        for b_p in [0, 0.5, 1.0, 5.0]:
+            for g in [0, 50, 100, 1000]:
+                subfolder = f'scenario_{i}_gamma_{g}_beta_p_{b_p}'
+                no_economics_exp(g, b_p, scenario, subfolder)
