@@ -23,7 +23,6 @@ DEFAULT_JOURNAL_SPECS = [
         "type_label": "commercial",
         "ratio": 0.4,
         "params": {
-            # Tuple indicates distribution: ("uniform", low, high)
             "selectivity_threshold_theta": ("uniform", 1.0, 3.0),
             "screening_noise_tau": 0.5,
             "bias_weight_b": 0.5,
@@ -61,8 +60,8 @@ class JournalAgent(mesa.Agent):
             reinvestment_rate,           # rho_j
             ethics_score,                # E_j
             initial_reputation,          # R_j(0)
-            reputation_decay=0.01,       # delta_R # Added default for safety
-            quality_to_reputation_alpha=0.1,  # alpha_R# Added default for safety
+            reputation_decay=0.01,       # delta_R  # Added default for safety
+            quality_to_reputation_alpha=0.1,  # alpha_R  # Added default for safety
             type_label=""
     ):
         super().__init__(model)
@@ -317,6 +316,9 @@ class PublishingModel(mesa.Model):
 
             # Journal Params
             journal_setup: list = None,
+            journal_reputation_decay: float = 0.01,
+            journal_quality_to_reputation_alpha: float = 0.1,
+
             seed: float = None
     ) -> None:
         super().__init__(seed=seed)
@@ -350,7 +352,10 @@ class PublishingModel(mesa.Model):
                     parsed_params[key] = val
 
             JournalAgent.create_agents(
-                self, count, type_label=[config["type_label"]] * count, **parsed_params
+                self, count, type_label=[config["type_label"]] * count,
+                reputation_decay=journal_reputation_decay,
+                quality_to_reputation_alpha=journal_quality_to_reputation_alpha,
+                **parsed_params
             )
 
         # Create Researchers

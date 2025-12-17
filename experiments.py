@@ -10,13 +10,14 @@ from model import PublishingModel, DEFAULT_JOURNAL_SPECS
 
 from visualization_utils import *
 
-def no_economics_exp(prestige_decay, prestige_social_multiplier, journal_specs):
+def no_economics_exp(prestige_decay, reputation_decay, journal_specs, folder):
     params = {
         "n_groups": 1000,
         "n_journals": 100,
         "enable_economics": False,
         "prestige_decay": prestige_decay,
-        "prestige_social_multiplier": prestige_social_multiplier,
+        "prestige_social_multiplier": 0,
+        "journal_reputation_decay": reputation_decay,
         "journal_setup": [journal_specs],
         "researcher_preferences": [(1.0, 0.0, 0.0)]
     }
@@ -24,7 +25,7 @@ def no_economics_exp(prestige_decay, prestige_social_multiplier, journal_specs):
     max_steps = 400
 
     now = datetime.now()
-    dir_name = Path(f'experiments/{now.strftime("%Y-%m-%d %H-%M-%S")}')
+    dir_name = Path(f'experiments/{folder} {now.strftime("%Y-%m-%d %H-%M-%S")}')
     Path.mkdir(dir_name, exist_ok=True, parents=True)
 
     # save params as .yaml file
@@ -78,7 +79,7 @@ if __name__ == "__main__":
     scenario_1 = copy.deepcopy(original_specs)
     selectivity_threshold_thetas = [-10, 3.0, 1.0]
     for i, j in enumerate(scenario_1):
-        j["params"]["selectivity_threshold_theta"] = selectivity_threshold_thetas[i]
+        j["params"]["0"] = selectivity_threshold_thetas[i]
         j["params"]["screening_noise_tau"] = 0.5
         j["params"]["initial_reputation"] = 1.0
         j["params"]["bias_weight_b"] = 0
@@ -100,8 +101,8 @@ if __name__ == "__main__":
         j["params"]["initial_reputation"] = initial_reputations[i]
         j["params"]["bias_weight_b"] = 0
 
-
-    for scenario in [original_specs, scenario_1, scenario_2, scenario_3]:
-        for prest_decay in [0, 0.001, 0.01, 0.1]:
-            for prest_social_multiplier in [0, 0.01, 0.1]:
-                no_economics_exp(prest_decay, prest_social_multiplier, scenario)
+    for i, scenario in enumerate([scenario_1, scenario_3, original_specs, scenario_2]):
+        for prest_decay in [0, 0.01, 0.1]:
+            for rep_decay in [0, 0.01, 0.1]:
+                subfolder = f'scenario_{i}_prestige_decay_{prest_decay}_rep_decay_{rep_decay}'
+                no_economics_exp(prest_decay, rep_decay, scenario, subfolder)
