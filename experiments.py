@@ -79,7 +79,7 @@ if __name__ == "__main__":
     scenario_1 = copy.deepcopy(original_specs)
     selectivity_threshold_thetas = [-10, 3.0, 1.0]
     for i, j in enumerate(scenario_1):
-        j["params"]["0"] = selectivity_threshold_thetas[i]
+        j["params"]["selectivity_threshold_theta"] = selectivity_threshold_thetas[i]
         j["params"]["screening_noise_tau"] = 0.5
         j["params"]["initial_reputation"] = 1.0
         j["params"]["bias_weight_b"] = 0

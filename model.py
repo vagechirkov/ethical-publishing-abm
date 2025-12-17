@@ -352,7 +352,9 @@ class PublishingModel(mesa.Model):
                     parsed_params[key] = val
 
             JournalAgent.create_agents(
-                self, count, type_label=[config["type_label"]] * count,
+                self,
+                count,
+                type_label=[config["type_label"]] * count,
                 reputation_decay=journal_reputation_decay,
                 quality_to_reputation_alpha=journal_quality_to_reputation_alpha,
                 **parsed_params
