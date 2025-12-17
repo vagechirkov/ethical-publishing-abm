@@ -25,7 +25,7 @@ def no_economics_exp(prestige_decay, reputation_decay, journal_specs, folder):
     max_steps = 400
 
     now = datetime.now()
-    dir_name = Path(f'experiments/{folder} {now.strftime("%Y-%m-%d %H-%M-%S")}')
+    dir_name = Path(f'experiments/{now.strftime("%Y-%m-%d %H-%M-%S")} {folder}')
     Path.mkdir(dir_name, exist_ok=True, parents=True)
 
     # save params as .yaml file
