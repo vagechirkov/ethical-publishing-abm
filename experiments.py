@@ -110,4 +110,4 @@ if __name__ == "__main__":
         for b_p in [0, 1.0, 5.0]:
             for a_r in [0, 1.0, 5.0, 10.0]:
                 subfolder = f'scenario_{i}_alpha_r_{a_r}_beta_p_{b_p}'
-                no_economics_exp(g, b_p, scenario, subfolder)
+                no_economics_exp(a_r, b_p, scenario, subfolder)
