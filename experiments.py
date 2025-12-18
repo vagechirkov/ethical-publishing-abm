@@ -23,7 +23,7 @@ def no_economics_exp(gamma, beta_p, journal_specs, folder):
         "g0": 1000,
         "gamma": gamma,
         "beta_p": beta_p,
-        "budget_slope_lambda": 10,
+        "budget_slope_lambda": 100,
     }
 
     max_steps = 400
