@@ -9,7 +9,7 @@ DEFAULT_JOURNAL_SPECS = [
         "ratio": 0.4,
         "params": {
             "selectivity_threshold_theta": -10.0,
-            "screening_noise_tau": 0.5,
+            "screening_noise_tau": 0.1,
             "bias_weight_b": 0.0,
             "initial_reputation": 1,
 
@@ -24,7 +24,7 @@ DEFAULT_JOURNAL_SPECS = [
         "ratio": 0.4,
         "params": {
             "selectivity_threshold_theta": ("uniform", 1.0, 3.0),
-            "screening_noise_tau": 0.5,
+            "screening_noise_tau": 0.1,
             "bias_weight_b": 0.5,
             "initial_reputation": 40,
 
@@ -38,7 +38,7 @@ DEFAULT_JOURNAL_SPECS = [
         "ratio": 0.2,
         "params": {
             "selectivity_threshold_theta": ("uniform", 1.0, 3.0),
-            "screening_noise_tau": 0.5,
+            "screening_noise_tau": 0.1,
             "bias_weight_b": 0.1,
             "initial_reputation": 40,
 

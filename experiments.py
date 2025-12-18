@@ -10,7 +10,7 @@ from model import PublishingModel, DEFAULT_JOURNAL_SPECS
 
 from visualization_utils import *
 
-def no_economics_exp(gamma, beta_p, journal_specs, folder):
+def no_economics_exp(alpha_r, beta_p, journal_specs, folder):
     params = {
         "n_groups": 1000,
         "n_journals": 100,
@@ -21,9 +21,10 @@ def no_economics_exp(gamma, beta_p, journal_specs, folder):
         "journal_setup": [journal_specs],
         "researcher_preferences": [(1.0, 0.0, 0.0)],
         "g0": 1000,
-        "gamma": gamma,
+        "gamma": 1,
+        "budget_slope_lambda": 10,
         "beta_p": beta_p,
-        "budget_slope_lambda": 100,
+        "journal_quality_to_reputation_alpha": alpha_r,
     }
 
     max_steps = 400
@@ -106,7 +107,7 @@ if __name__ == "__main__":
         j["params"]["bias_weight_b"] = 0
 
     for i, scenario in enumerate([scenario_1, scenario_2, scenario_3, original_specs]):
-        for b_p in [5.0]:
-            for g in [1, 1000]:
-                subfolder = f'scenario_{i}_gamma_{g}_beta_p_{b_p}'
+        for b_p in [0, 1.0, 5.0]:
+            for a_r in [0, 1.0, 5.0, 10.0]:
+                subfolder = f'scenario_{i}_alpha_r_{a_r}_beta_p_{b_p}'
                 no_economics_exp(g, b_p, scenario, subfolder)
