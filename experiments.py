@@ -23,6 +23,7 @@ def no_economics_exp(gamma, beta_p, journal_specs, folder):
         "g0": 1000,
         "gamma": gamma,
         "beta_p": beta_p,
+        "budget_slope_lambda": 10,
     }
 
     max_steps = 400
@@ -105,7 +106,7 @@ if __name__ == "__main__":
         j["params"]["bias_weight_b"] = 0
 
     for i, scenario in enumerate([scenario_1, scenario_2, scenario_3, original_specs]):
-        for b_p in [0, 0.5, 1.0, 5.0]:
-            for g in [0, 50, 100, 1000]:
+        for b_p in [5.0]:
+            for g in [1, 1000]:
                 subfolder = f'scenario_{i}_gamma_{g}_beta_p_{b_p}'
                 no_economics_exp(g, b_p, scenario, subfolder)
